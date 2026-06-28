@@ -168,6 +168,131 @@ server.registerTool(
   }
 );
 
+// 12. Get event listeners
+server.registerTool(
+  'browser_get_listeners',
+  {
+    description: 'Get all active Javascript event listeners attached to the element.',
+    inputSchema: {
+      backendNodeId: z.number().describe('The backend DOM node ID of the element'),
+    },
+  },
+  async ({ backendNodeId }) => {
+    const result = await browserManager.getEventListeners(backendNodeId);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// 13. Toggle paint flash
+server.registerTool(
+  'browser_toggle_paint_flash',
+  {
+    description: 'Toggle visual paint flash overlays in Chromium.',
+    inputSchema: {
+      enabled: z.boolean().describe('Enable or disable paint flashing rects'),
+    },
+  },
+  async ({ enabled }) => {
+    const result = await browserManager.togglePaintFlash(enabled);
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
+// 14. Get performance metrics
+server.registerTool(
+  'browser_get_performance_metrics',
+  { description: 'Get Chromium internal performance/rendering metrics.' },
+  async () => {
+    const result = await browserManager.getPerformanceMetrics();
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// 15. Sniff Framework State
+server.registerTool(
+  'browser_sniff_framework_state',
+  { description: 'Sniff React component fiber trees and retrieve active state trees from the page DOM.' },
+  async () => {
+    const result = await browserManager.sniffFrameworkState();
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// 16. Detect Leaks & Visual Anomalies
+server.registerTool(
+  'browser_detect_leaks_and_anomalies',
+  { description: 'Calculate layout shifts (CLS), background brightness, and identify memory leaks (detached DOM nodes count).' },
+  async () => {
+    const result = await browserManager.detectLeaksAndAnomalies();
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// 17. Throttle Network
+server.registerTool(
+  'browser_throttle_network',
+  {
+    description: 'Emulate network conditions by throttling bandwidth and adding latency.',
+    inputSchema: {
+      latencyMs: z.number().describe('Latency delay to inject in milliseconds'),
+      downloadKbps: z.number().describe('Max download bandwidth in Kilobits per second (0 to disable throttling)'),
+      uploadKbps: z.number().describe('Max upload bandwidth in Kilobits per second (0 to disable throttling)'),
+    },
+  },
+  async ({ latencyMs, downloadKbps, uploadKbps }) => {
+    const result = await browserManager.throttleNetwork(latencyMs, downloadKbps, uploadKbps);
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
+// 18. Intercept Requests
+server.registerTool(
+  'browser_intercept_request',
+  {
+    description: 'Pause and intercept matching network requests to inject delay or fail them.',
+    inputSchema: {
+      pattern: z.string().describe('URL glob/regex pattern to intercept (e.g. *api*)'),
+      action: z.enum(['delay', 'fail']).describe('Action to apply'),
+      delayMs: z.number().optional().describe('Delay in milliseconds (required for delay action)'),
+    },
+  },
+  async ({ pattern, action, delayMs }) => {
+    const result = await browserManager.enableRequestInterception(pattern, action, delayMs);
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
+// 19. Disable request interception
+server.registerTool(
+  'browser_disable_interception',
+  { description: 'Disable and clear all active network request interception rules.' },
+  async () => {
+    const result = await browserManager.disableRequestInterception();
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
+// 20. Test responsive layouts
+server.registerTool(
+  'browser_test_responsive',
+  {
+    description: 'Test page accessibility and layouts across standard viewports (Mobile, Tablet, Desktop).',
+    inputSchema: {
+      // eslint-disable-next-line deprecation/deprecation
+      url: z.string().url().describe('The URL to test'),
+    },
+  },
+  async ({ url }) => {
+    const viewports = [
+      { width: 375, height: 667, name: 'Mobile (iPhone)' },
+      { width: 768, height: 1024, name: 'Tablet (iPad)' },
+      { width: 1280, height: 800, name: 'Desktop (Standard)' },
+    ];
+    const result = await browserManager.testResponsiveLayout(url, viewports);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

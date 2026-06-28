@@ -68,6 +68,18 @@
     btn.addEventListener('click', () => {
       btn.textContent = 'Clicked!';
     });
+
+    // Mock a React Fiber node on the button element for testing the sniffer
+    btn.__reactFiber$mockFiberNode = {
+      type: { name: 'SubmitButtonComponent' },
+      memoizedState: { label: 'Clickable Button', active: true },
+      memoizedProps: {},
+      return: {
+        type: { name: 'MainDashboardContainer' },
+        memoizedState: { theme: 'light' },
+        return: null
+      }
+    };
   </script>
 </body>
 </html>

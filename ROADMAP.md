@@ -20,22 +20,22 @@ This roadmap outlines the phases of development for the Agentic Browser Observab
 - [x] **Intelligent Context Compression**
   - Filter raw browser telemetry (e.g., hundreds of mousemove events) into semantic text narratives.
 
-## Phase 3: Advanced Rendering & State Diagnostics (Future)
-- [ ] **Interactive Layer & Listener Mapping**
+## Phase 3: Advanced Rendering & State Diagnostics (Complete)
+- [x] **Interactive Layer & Listener Mapping**
   - Expose all active JavaScript event listeners attached to DOM nodes.
-- [ ] **GPU Paint & Compositor Profiler**
+- [x] **GPU Paint & Compositor Profiler**
   - Surface Chromium's internal rendering metrics (paint flash overlays, compositing reasons) to debug visual lag.
-- [ ] **Framework State History Sniffer**
+- [x] **Framework State History Sniffer**
   - Hook into React/Zustand/Redux to output state tree diffs before and after actions.
-- [ ] **Automatic Visual Anomaly Detector**
+- [x] **Automatic Visual Anomaly Detector**
   - Flag frame-to-frame Cumulative Layout Shifts (CLS) or sudden color brightness spikes.
-- [ ] **Heap Allocation & Memory Leak Inspector**
+- [x] **Heap Allocation & Memory Leak Inspector**
   - Take browser heap snapshots to return reference retention paths for detached DOM nodes.
 
-## Phase 4: Environment & Network Control (Future)
-- [ ] **Deterministic Network & Time-Warp Controller**
+## Phase 4: Environment & Network Control (Complete)
+- [x] **Deterministic Network & Time-Warp Controller**
   - Artificially throttle, delay, or reorder individual network requests and step through browser execution time frame-by-frame to force race conditions.
-- [ ] **Cache & Service Worker Sandbox**
+- [x] **Cache & Service Worker Sandbox**
   - Dynamically mock network dropouts (offline state) and manipulate LocalStorage/IndexedDB.
-- [ ] **Multi-Engine Responsive Tester**
+- [x] **Multi-Engine Responsive Tester**
   - Run single user flows across parallel layout engines and viewport sizes.

@@ -19,6 +19,21 @@ const MUTATION_INJECT_SCRIPT = `
   window.__mcp_observer_initialized = true;
   window.__mcp_id_seq = 1;
   window.__mcp_mutations = [];
+  window.__mcp_cls = 0;
+
+  // Setup layout shift observer for CLS tracking
+  if (typeof PerformanceObserver !== 'undefined') {
+    try {
+      const clsObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!entry.hadRecentInput) {
+            window.__mcp_cls += entry.value;
+          }
+        }
+      });
+      clsObserver.observe({ type: 'layout-shift', buffered: true });
+    } catch (e) {}
+  }
 
   function getOrAssignId(node) {
     if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
@@ -492,6 +507,222 @@ export class BrowserManager {
         resolve(`Headful handoff session closed. Local profile saved to ${profileDir}`);
       });
     });
+  }
+
+  public async getEventListeners(backendNodeId: number): Promise<unknown[]> {
+    if (!this.cdpSession) throw new Error('No active CDP session.');
+
+    await this.cdpSession.send('DOM.enable');
+    const { object } = (await this.cdpSession.send('DOM.resolveNode', {
+      backendNodeId,
+    })) as { object: { objectId?: string } };
+
+    if (!object || !object.objectId) {
+      throw new Error(`Failed to resolve backend node ID ${backendNodeId} to an object ID`);
+    }
+
+    try {
+      const response = await this.cdpSession.send('DOMDebugger.getEventListeners', {
+        objectId: object.objectId,
+      });
+      return response.listeners;
+    } finally {
+      await this.cdpSession
+        .send('Runtime.releaseObject', { objectId: object.objectId })
+        .catch(() => {});
+    }
+  }
+
+  public async togglePaintFlash(enabled: boolean): Promise<string> {
+    if (!this.cdpSession) throw new Error('No active CDP session.');
+    const session = this.cdpSession as unknown as {
+      send(method: string, args?: Record<string, unknown>): Promise<unknown>;
+    };
+    await session.send('Rendering.setShowPaintRects', { show: enabled });
+    return `Paint flashing set to: ${enabled}`;
+  }
+
+  public async getPerformanceMetrics(): Promise<{ name: string; value: number }[]> {
+    if (!this.cdpSession) throw new Error('No active CDP session.');
+    await this.cdpSession.send('Performance.enable');
+    const response = await this.cdpSession.send('Performance.getMetrics');
+    return response.metrics;
+  }
+
+  public async sniffFrameworkState(): Promise<unknown> {
+    if (!this.page) throw new Error('No active page session.');
+
+    const script = `(() => {
+      const results = [];
+
+      function findReactData(element) {
+        let key = null;
+        for (const k in element) {
+          if (k.startsWith('__reactFiber$') || k.startsWith('__reactContainer$')) {
+            key = k;
+            break;
+          }
+        }
+        if (!key) return;
+
+        const fiber = element[key];
+        if (!fiber) return;
+
+        let current = fiber;
+        while (current) {
+          const type = current.type;
+          const name =
+            typeof type === 'function'
+              ? type.name
+              : typeof type === 'string'
+                ? type
+                : (type && typeof type === 'object' && typeof type.name === 'string'
+                  ? type.name
+                  : null);
+
+          if (name) {
+            results.push({
+              component: name,
+              state: current.memoizedState,
+              props: current.memoizedProps,
+            });
+          }
+          current = current.return;
+        }
+      }
+
+      const allElements = document.getElementsByTagName('*');
+      for (let i = 0; i < allElements.length; i++) {
+        findReactData(allElements[i]);
+      }
+
+      return results;
+    })()`;
+
+    return await this.page.evaluate(script);
+  }
+
+  public async detectLeaksAndAnomalies(): Promise<{
+    layoutShiftScore: number;
+    bodyBrightness: number;
+    activeNodesCount: number;
+    domElementsCount: number;
+    detachedNodesCount: number;
+  }> {
+    if (!this.page || !this.cdpSession) throw new Error('No active page session.');
+
+    const performanceMetrics = await this.getPerformanceMetrics();
+    const nodeMetric = performanceMetrics.find((m) => m.name === 'Nodes');
+    const activeNodesCount = nodeMetric ? nodeMetric.value : 0;
+
+    const domElementsCount = await this.page.evaluate(() => {
+      return document.getElementsByTagName('*').length;
+    });
+
+    const bodyBrightnessAndCls = (await this.page.evaluate(`(() => {
+      const win = window;
+      const cls = win.__mcp_cls || 0;
+      let bodyBrightness = 255;
+      const bodyBg = window.getComputedStyle(document.body).backgroundColor;
+      const match = bodyBg.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+      if (match) {
+        const r = parseInt(match[1], 10);
+        const g = parseInt(match[2], 10);
+        const b = parseInt(match[3], 10);
+        bodyBrightness = (r + g + b) / 3;
+      }
+      return { cls, bodyBrightness };
+    })()`)) as { cls: number; bodyBrightness: number };
+
+    return {
+      layoutShiftScore: bodyBrightnessAndCls.cls,
+      bodyBrightness: bodyBrightnessAndCls.bodyBrightness,
+      activeNodesCount,
+      domElementsCount,
+      detachedNodesCount: Math.max(0, activeNodesCount - domElementsCount),
+    };
+  }
+
+  public async throttleNetwork(
+    latencyMs: number,
+    downloadKbps: number,
+    uploadKbps: number
+  ): Promise<string> {
+    if (!this.cdpSession) throw new Error('No active CDP session.');
+
+    const downloadBps = downloadKbps > 0 ? downloadKbps * 125 : -1;
+    const uploadBps = uploadKbps > 0 ? uploadKbps * 125 : -1;
+
+    await this.cdpSession.send('Network.emulateNetworkConditions', {
+      offline: false,
+      latency: latencyMs,
+      downloadThroughput: downloadBps,
+      uploadThroughput: uploadBps,
+    });
+
+    return `Network throttled: latency=${latencyMs}ms, download=${downloadKbps}Kbps, upload=${uploadKbps}Kbps`;
+  }
+
+  public async enableRequestInterception(
+    pattern: string,
+    action: 'delay' | 'fail',
+    delayMs?: number
+  ): Promise<string> {
+    if (!this.cdpSession) throw new Error('No active CDP session.');
+
+    await this.cdpSession.send('Fetch.enable', {
+      patterns: [{ urlPattern: pattern }],
+    });
+
+    this.cdpSession.on('Fetch.requestPaused', async (event) => {
+      const requestId = event.requestId;
+
+      if (action === 'fail') {
+        await this.cdpSession?.send('Fetch.failRequest', {
+          requestId,
+          errorReason: 'Failed',
+        }).catch(() => {});
+      } else if (action === 'delay' && delayMs) {
+        setTimeout(async () => {
+          await this.cdpSession?.send('Fetch.continueRequest', { requestId }).catch(() => {});
+        }, delayMs);
+      } else {
+        await this.cdpSession?.send('Fetch.continueRequest', { requestId }).catch(() => {});
+      }
+    });
+
+    return `Interception enabled for pattern '${pattern}' with action '${action}'`;
+  }
+
+  public async disableRequestInterception(): Promise<string> {
+    if (!this.cdpSession) throw new Error('No active CDP session.');
+    await this.cdpSession.send('Fetch.disable');
+    return 'Request interception disabled';
+  }
+
+  public async testResponsiveLayout(
+    url: string,
+    viewports: { width: number; height: number; name: string }[]
+  ): Promise<{ viewport: string; accessibilityTree: string }[]> {
+    if (!this.page) throw new Error('No active page session.');
+
+    const results: { viewport: string; accessibilityTree: string }[] = [];
+
+    for (const vp of viewports) {
+      await this.page.setViewport({ width: vp.width, height: vp.height });
+      await this.page.goto(url, { waitUntil: 'load' });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const tree = await this.getAccessibilityTree();
+      results.push({
+        viewport: `${vp.name} (${vp.width}x${vp.height})`,
+        accessibilityTree: tree,
+      });
+    }
+
+    // Restore default viewport
+    await this.page.setViewport({ width: 1280, height: 720 });
+    return results;
   }
 
   public getActivePage(): Page | null {
