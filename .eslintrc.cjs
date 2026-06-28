@@ -6,8 +6,10 @@ module.exports = {
   ],
   parserOptions: {
     ecmaVersion: 2022,
-    sourceType: 'module'
+    sourceType: 'module',
+    project: './tsconfig.json'
   },
+  plugins: ['deprecation'],
   env: {
     node: true,
     es2022: true
@@ -16,6 +18,7 @@ module.exports = {
     '@typescript-eslint/no-explicit-any': 'error',
     '@typescript-eslint/explicit-function-return-type': 'off',
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-    'no-console': 'off'
+    'no-console': 'off',
+    'deprecation/deprecation': 'error'
   }
 };

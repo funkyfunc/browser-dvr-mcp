@@ -1,43 +1,18 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 
-const server = new Server(
-  {
-    name: 'agentic-browser-observability',
-    version: '0.1.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
-
-// Define tool listings
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'ping',
-        description: 'Verify connection to the Browser Observability server',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-    ],
-  };
+const server = new McpServer({
+  name: 'agentic-browser-observability',
+  version: '0.1.0',
 });
 
-// Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name } = request.params;
-
-  if (name === 'ping') {
+// Add the ping tool using the new McpServer registerTool API
+server.registerTool(
+  'ping',
+  {
+    description: 'Verify connection to the Browser Observability server',
+  },
+  async () => {
     return {
       content: [
         {
@@ -47,11 +22,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ],
     };
   }
+);
 
-  throw new Error(`Tool not found: ${name}`);
-});
-
-// Run server using stdio transport
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
