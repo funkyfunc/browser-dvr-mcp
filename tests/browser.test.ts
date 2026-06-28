@@ -464,7 +464,159 @@ describe('BrowserManager', () => {
     });
   });
 
-  // ── 15. Close & Post-Close Guards ────────────────────────────────────────
+  // ── 15. Screenshot ───────────────────────────────────────────────────────
+
+  describe('Screenshot', () => {
+    it('should capture a viewport screenshot as base64 PNG', async () => {
+      await bm.navigate(TEST_PAGE_URL);
+      const result = await bm.screenshot();
+      expect(result.data).toBeTruthy();
+      expect(result.data.length).toBeGreaterThan(100); // non-trivial base64
+      expect(result.mimeType).toBe('image/png');
+      expect(result.savedTo).toBeUndefined();
+    });
+
+    it('should capture a JPEG screenshot', async () => {
+      const result = await bm.screenshot({ format: 'jpeg', quality: 50 });
+      expect(result.mimeType).toBe('image/jpeg');
+      expect(result.data.length).toBeGreaterThan(100);
+    });
+
+    it('should capture a full-page screenshot', async () => {
+      const viewportResult = await bm.screenshot({ format: 'png' });
+      const fullPageResult = await bm.screenshot({ format: 'png', fullPage: true });
+      // Full page should be at least as large as viewport
+      expect(fullPageResult.data.length).toBeGreaterThanOrEqual(viewportResult.data.length);
+    });
+
+    it('should capture an element-specific screenshot', async () => {
+      const nodeId = await findNodeIdByName(bm, 'Clickable Button');
+      const result = await bm.screenshot({ backendNodeId: nodeId });
+      expect(result.data).toBeTruthy();
+      expect(result.mimeType).toBe('image/png');
+    });
+
+    it('should save screenshot to disk when savePath is provided', async () => {
+      const savePath = join(process.cwd(), 'dist', 'test-screenshot.png');
+      const result = await bm.screenshot({ savePath });
+      expect(result.savedTo).toBe(savePath);
+      expect(existsSync(savePath)).toBe(true);
+      // Clean up
+      rmSync(savePath, { force: true });
+    });
+
+    it('should throw for invalid backendNodeId', async () => {
+      await expect(bm.screenshot({ backendNodeId: 999999 })).rejects.toThrow();
+    });
+  });
+
+  // ── 16. Screen Recording ─────────────────────────────────────────────────
+
+  describe('Screen Recording', () => {
+    const recordingDir = join(process.cwd(), 'dist', 'test-recording-vitest');
+
+    afterAll(() => {
+      if (existsSync(recordingDir)) {
+        rmSync(recordingDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should start recording', async () => {
+      await bm.navigate(TEST_PAGE_URL);
+      const result = await bm.startRecording({ outputDir: recordingDir });
+      expect(result).toContain('Recording started');
+      expect(result).toContain(recordingDir);
+    });
+
+    it('should reject double start', async () => {
+      await expect(bm.startRecording()).rejects.toThrow(/already in progress/);
+    });
+
+    it('should capture frames during interactions', async () => {
+      // Perform some interactions so screencast has frames to capture
+      const nodeId = await findNodeIdByName(bm, 'Clickable Button');
+      await bm.click(nodeId);
+      // Wait for a few screencast frames
+      await new Promise((r) => setTimeout(r, 2000));
+    });
+
+    it('should stop recording and produce output', async () => {
+      const result = await bm.stopRecording();
+      expect(result.status).toBe('success');
+      expect(result.outputDir).toBe(recordingDir);
+      expect(result.frameCount).toBeGreaterThan(0);
+      expect(result.durationSeconds).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should have written frame files', () => {
+      const files = readdirSync(recordingDir);
+      const jpgs = files.filter((f) => f.endsWith('.jpg'));
+      expect(jpgs.length).toBeGreaterThan(0);
+      expect(jpgs[0]).toMatch(/^frame_\d{5}\.jpg$/);
+    });
+
+    it('should have written a manifest', () => {
+      const manifestPath = join(recordingDir, 'manifest.json');
+      expect(existsSync(manifestPath)).toBe(true);
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      expect(manifest.frameCount).toBeGreaterThan(0);
+      expect(manifest.ffmpegCommand).toContain('ffmpeg');
+      expect(manifest.frames).toBeInstanceOf(Array);
+    });
+
+    it('should throw when stopping with no active recording', async () => {
+      await expect(bm.stopRecording()).rejects.toThrow(/No recording in progress/);
+    });
+  });
+
+  // ── 17. Batch Actions ────────────────────────────────────────────────────
+
+  describe('Batch Actions', () => {
+    it('should execute multiple actions sequentially', async () => {
+      await bm.navigate(TEST_PAGE_URL);
+      const result = await bm.executeBatch([
+        { tool: 'browser_get_accessibility_tree', args: {} },
+        { tool: 'browser_get_performance_metrics', args: {} },
+      ]);
+      expect(result.results).toHaveLength(2);
+      expect(result.results[0].success).toBe(true);
+      expect(result.results[0].tool).toBe('browser_get_accessibility_tree');
+      expect(result.results[1].success).toBe(true);
+    });
+
+    it('should stop on first error and return partial results', async () => {
+      const result = await bm.executeBatch([
+        { tool: 'browser_get_accessibility_tree', args: {} },
+        { tool: 'browser_click', args: { backendNodeId: 999999 } }, // will fail
+        { tool: 'browser_get_performance_metrics', args: {} }, // should not execute
+      ]);
+      expect(result.results).toHaveLength(2); // only 2 results, not 3
+      expect(result.results[0].success).toBe(true);
+      expect(result.results[1].success).toBe(false);
+      expect(result.results[1].error).toBeTruthy();
+    });
+
+    it('should reject unknown tool names', async () => {
+      const result = await bm.executeBatch([
+        { tool: 'nonexistent_tool', args: {} },
+      ]);
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].success).toBe(false);
+      expect(result.results[0].error).toContain('Unknown tool');
+    });
+
+    it('should support screenshot in batch', async () => {
+      const result = await bm.executeBatch([
+        { tool: 'browser_screenshot', args: { format: 'jpeg' } },
+      ]);
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].success).toBe(true);
+      const screenshotResult = result.results[0].result as { data: string; mimeType: string };
+      expect(screenshotResult.mimeType).toBe('image/jpeg');
+    });
+  });
+
+  // ── 18. Close & Post-Close Guards ────────────────────────────────────────
 
   describe('Close & Post-Close Guards', () => {
     it('should close the browser', async () => {

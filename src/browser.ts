@@ -1,9 +1,26 @@
 import puppeteer, { Browser, Page, CDPSession, ElementHandle } from 'puppeteer-core';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { writeFile, mkdir } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { Worker } from 'worker_threads';
 import { formatAccessibilityTree, AXNode } from './usag.js';
+
+// ─── Recording Types ────────────────────────────────────────────────────────
+
+interface RecordingFrame {
+  data: string; // base64 JPEG
+  timestamp: number;
+}
+
+interface RecordingState {
+  frames: RecordingFrame[];
+  startedAt: number;
+  autoStopTimer: ReturnType<typeof setTimeout>;
+  outputDir: string;
+}
+
+const MAX_RECORDING_DURATION_MS = 300_000; // 5 minute safety limit
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -165,6 +182,8 @@ export class BrowserManager {
   private worker: Worker | null = null;
   private screencastActive = false;
   private fetchInterceptHandler: ((...args: unknown[]) => void) | null = null;
+  private activeRecording: RecordingState | null = null;
+  private recordingFrameHandler: ((...args: unknown[]) => void) | null = null;
 
   constructor() {
     this.initWorker();
@@ -219,6 +238,10 @@ export class BrowserManager {
   }
 
   public async close(): Promise<string> {
+    // Auto-finalize any active recording before closing
+    if (this.activeRecording) {
+      try { await this.stopRecording(); } catch { /* best effort */ }
+    }
     if (this.worker) {
       this.worker.postMessage({ type: 'clear' });
     }
@@ -778,5 +801,255 @@ export class BrowserManager {
 
   public getActivePage(): Page | null {
     return this.page;
+  }
+
+  // ─── Screenshot ──────────────────────────────────────────────────────────
+
+  public async screenshot(options: {
+    savePath?: string;
+    fullPage?: boolean;
+    format?: 'png' | 'jpeg';
+    quality?: number;
+    backendNodeId?: number;
+  } = {}): Promise<{ data: string; mimeType: string; savedTo?: string }> {
+    if (!this.page) throw new Error('No active page session.');
+
+    const format = options.format || 'png';
+    const encoding = 'base64' as const;
+
+    let buffer: string;
+
+    if (options.backendNodeId !== undefined) {
+      // Element-specific screenshot
+      if (!this.cdpSession) throw new Error('No active CDP session.');
+      const { object } = (await this.cdpSession.send('DOM.resolveNode', {
+        backendNodeId: options.backendNodeId,
+      })) as { object: { objectId?: string } };
+
+      if (!object?.objectId) {
+        throw new Error(`Failed to resolve node ID ${options.backendNodeId}`);
+      }
+
+      const { model } = (await this.cdpSession.send('DOM.getBoxModel', {
+        backendNodeId: options.backendNodeId,
+      })) as { model: { content: number[] } };
+
+      // content quad: [x1,y1, x2,y2, x3,y3, x4,y4]
+      const q = model.content;
+      const x = Math.min(q[0], q[2], q[4], q[6]);
+      const y = Math.min(q[1], q[3], q[5], q[7]);
+      const width = Math.max(q[0], q[2], q[4], q[6]) - x;
+      const height = Math.max(q[1], q[3], q[5], q[7]) - y;
+
+      const result = await this.cdpSession.send('Page.captureScreenshot', {
+        format,
+        quality: format === 'jpeg' ? (options.quality ?? 80) : undefined,
+        clip: { x, y, width, height, scale: 1 },
+      });
+
+      buffer = (result as { data: string }).data;
+
+      // Release object
+      await this.cdpSession.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+    } else {
+      // Full viewport or full page screenshot
+      buffer = (await this.page.screenshot({
+        encoding,
+        type: format,
+        quality: format === 'jpeg' ? (options.quality ?? 80) : undefined,
+        fullPage: options.fullPage ?? false,
+      })) as string;
+    }
+
+    const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+
+    // Save to disk if requested
+    if (options.savePath) {
+      await mkdir(join(options.savePath, '..'), { recursive: true }).catch(() => {});
+      await writeFile(options.savePath, Buffer.from(buffer, 'base64'));
+      return { data: buffer, mimeType, savedTo: options.savePath };
+    }
+
+    return { data: buffer, mimeType };
+  }
+
+  // ─── Screen Recording ───────────────────────────────────────────────────
+
+  public async startRecording(options: {
+    outputDir?: string;
+  } = {}): Promise<string> {
+    if (this.activeRecording) {
+      throw new Error(
+        'A recording is already in progress. Call stopRecording first to finalize the current recording.'
+      );
+    }
+    if (!this.cdpSession) throw new Error('No active CDP session. Launch browser first.');
+
+    const outputDir = options.outputDir || join(process.cwd(), 'dist', 'recordings', `rec_${Date.now()}`);
+    mkdirSync(outputDir, { recursive: true });
+
+    const frames: RecordingFrame[] = [];
+
+    // Start a dedicated high-quality screencast for recording
+    // (This is separate from the DVR screencast which is low-res)
+    const handler = (event: { data: string; metadata: { timestamp: number }; sessionId: number }) => {
+      frames.push({
+        data: event.data,
+        timestamp: Date.now(),
+      });
+      // Acknowledge frame to keep screencast flowing
+      this.cdpSession?.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
+    };
+
+    this.recordingFrameHandler = handler as (...args: unknown[]) => void;
+    this.cdpSession.on('Page.screencastFrame', this.recordingFrameHandler);
+
+    // If screencast isn't already active (from DVR), start it
+    // If it is active, the existing screencast will feed both DVR and recording handlers
+    if (!this.screencastActive) {
+      await this.cdpSession.send('Page.startScreencast', {
+        format: 'jpeg',
+        quality: 85,
+        maxWidth: 1920,
+        maxHeight: 1080,
+        everyNthFrame: 1,
+      });
+    }
+
+    // Safety auto-stop timer
+    const autoStopTimer = setTimeout(async () => {
+      console.error(`Recording auto-stopped after ${MAX_RECORDING_DURATION_MS / 1000}s safety limit.`);
+      try { await this.stopRecording(); } catch { /* best effort */ }
+    }, MAX_RECORDING_DURATION_MS);
+
+    this.activeRecording = {
+      frames,
+      startedAt: Date.now(),
+      autoStopTimer,
+      outputDir,
+    };
+
+    return (
+      `Recording started — frames are being captured now. ` +
+      `Proceed with interactions immediately; there is no warmup delay. ` +
+      `Output directory: ${outputDir}. ` +
+      `Call browser_stop_recording when done. Auto-stops after 5 minutes.`
+    );
+  }
+
+  public async stopRecording(): Promise<{
+    status: string;
+    outputDir: string;
+    frameCount: number;
+    durationSeconds: number;
+    manifestPath: string;
+  }> {
+    if (!this.activeRecording) {
+      throw new Error('No recording in progress. Use browser_start_recording first.');
+    }
+
+    const recording = this.activeRecording;
+    clearTimeout(recording.autoStopTimer);
+
+    // Remove the recording frame handler
+    if (this.recordingFrameHandler && this.cdpSession) {
+      this.cdpSession.off('Page.screencastFrame', this.recordingFrameHandler);
+      this.recordingFrameHandler = null;
+    }
+
+    const durationSeconds = Math.round((Date.now() - recording.startedAt) / 1000);
+    const { frames, outputDir } = recording;
+
+    // Write frames to disk as numbered JPEGs
+    for (let i = 0; i < frames.length; i++) {
+      const filename = `frame_${String(i).padStart(5, '0')}.jpg`;
+      writeFileSync(join(outputDir, filename), Buffer.from(frames[i].data, 'base64'));
+    }
+
+    // Write a manifest with timestamps for potential video assembly
+    const manifest = {
+      frameCount: frames.length,
+      durationSeconds,
+      startedAt: new Date(recording.startedAt).toISOString(),
+      stoppedAt: new Date().toISOString(),
+      fps: frames.length > 0 ? Math.round(frames.length / Math.max(durationSeconds, 1)) : 0,
+      frames: frames.map((f, i) => ({
+        index: i,
+        file: `frame_${String(i).padStart(5, '0')}.jpg`,
+        timestamp: f.timestamp,
+        relativeMs: f.timestamp - recording.startedAt,
+      })),
+      ffmpegCommand: `ffmpeg -framerate ${Math.round(frames.length / Math.max(durationSeconds, 1))} -i "${outputDir}/frame_%05d.jpg" -c:v libx264 -pix_fmt yuv420p "${outputDir}/recording.mp4"`,
+    };
+
+    const manifestPath = join(outputDir, 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    this.activeRecording = null;
+
+    return {
+      status: 'success',
+      outputDir,
+      frameCount: frames.length,
+      durationSeconds,
+      manifestPath,
+    };
+  }
+
+  // ─── Batch Actions ──────────────────────────────────────────────────────
+
+  public async executeBatch(
+    actions: { tool: string; args: Record<string, unknown> }[]
+  ): Promise<{ results: { tool: string; success: boolean; result?: unknown; error?: string }[] }> {
+    const results: { tool: string; success: boolean; result?: unknown; error?: string }[] = [];
+
+    const toolMap: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
+      browser_click: (a) => this.click(a.backendNodeId as number),
+      browser_type: (a) => this.type(a.backendNodeId as number, a.text as string),
+      browser_hover: (a) => this.hover(a.backendNodeId as number),
+      browser_navigate: (a) => this.navigate(a.url as string),
+      browser_get_accessibility_tree: () => this.getAccessibilityTree(),
+      browser_get_mutations: () => this.getMutations(),
+      browser_get_listeners: (a) => this.getEventListeners(a.backendNodeId as number),
+      browser_get_performance_metrics: () => this.getPerformanceMetrics(),
+      browser_sniff_framework_state: () => this.sniffFrameworkState(),
+      browser_detect_leaks_and_anomalies: () => this.detectLeaksAndAnomalies(),
+      browser_throttle_network: (a) => this.throttleNetwork(
+        a.latencyMs as number, a.downloadKbps as number, a.uploadKbps as number
+      ),
+      browser_intercept_request: (a) => this.enableRequestInterception(
+        a.pattern as string, a.action as 'delay' | 'fail', a.delayMs as number | undefined
+      ),
+      browser_disable_interception: () => this.disableRequestInterception(),
+      browser_screenshot: (a) => this.screenshot(a as Parameters<typeof this.screenshot>[0]),
+      browser_toggle_paint_flash: (a) => this.togglePaintFlash(a.enabled as boolean),
+      browser_dump_dvr: (a) => this.dumpDvr(a.outputPath as string),
+    };
+
+    for (const action of actions) {
+      const handler = toolMap[action.tool];
+      if (!handler) {
+        results.push({
+          tool: action.tool,
+          success: false,
+          error: `Unknown tool '${action.tool}'. Supported: ${Object.keys(toolMap).join(', ')}`,
+        });
+        break; // Stop on first error
+      }
+
+      try {
+        const result = await handler(action.args);
+        results.push({ tool: action.tool, success: true, result });
+      } catch (err) {
+        results.push({
+          tool: action.tool,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        break; // Stop on first error
+      }
+    }
+
+    return { results };
   }
 }

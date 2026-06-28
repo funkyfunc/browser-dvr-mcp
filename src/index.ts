@@ -293,6 +293,115 @@ server.registerTool(
   }
 );
 
+// 21. Screenshot
+server.registerTool(
+  'browser_screenshot',
+  {
+    description:
+      'Capture a screenshot. Without a backendNodeId, captures the full viewport (or full scrollable page with fullPage=true). ' +
+      'With a backendNodeId, captures just that element. Returns the image inline or saves to disk.',
+    inputSchema: {
+      backendNodeId: z.number().optional().describe('If provided, capture just this element'),
+      fullPage: z.boolean().optional().describe('Capture the entire scrollable page instead of just the viewport (default: false)'),
+      format: z.enum(['png', 'jpeg']).optional().describe('Image format (default: png)'),
+      quality: z.number().optional().describe('JPEG quality 0-100 (only for jpeg format, default: 80)'),
+      savePath: z.string().optional().describe('Optional absolute file path to save the image. If omitted, returns base64 inline.'),
+    },
+  },
+  async (args) => {
+    const result = await browserManager.screenshot(args);
+
+    if (result.savedTo) {
+      return {
+        content: [
+          { type: 'text' as const, text: `Screenshot saved to ${result.savedTo}` },
+          { type: 'image' as const, data: result.data, mimeType: result.mimeType },
+        ],
+      };
+    }
+
+    return {
+      content: [
+        { type: 'image' as const, data: result.data, mimeType: result.mimeType },
+      ],
+    };
+  }
+);
+
+// 22. Start Recording
+server.registerTool(
+  'browser_start_recording',
+  {
+    description:
+      'Start recording the browser screen. Frames are captured immediately — proceed with interactions right away. ' +
+      'Only one recording at a time. Auto-stops after 5 minutes. Call browser_stop_recording to finalize.',
+    inputSchema: {
+      outputDir: z
+        .string()
+        .optional()
+        .describe('Optional directory to save recording frames. Defaults to dist/recordings/rec_<timestamp>'),
+    },
+  },
+  async ({ outputDir }) => {
+    const result = await browserManager.startRecording({ outputDir });
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
+// 23. Stop Recording
+server.registerTool(
+  'browser_stop_recording',
+  {
+    description:
+      'Stop the active recording and finalize output. Returns frame count, duration, output directory, and a ready-to-use ffmpeg command to assemble frames into an MP4 video.',
+  },
+  async () => {
+    const result = await browserManager.stopRecording();
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Recording stopped.\n` +
+            `Output: ${result.outputDir}\n` +
+            `Frames: ${result.frameCount}\n` +
+            `Duration: ${result.durationSeconds}s\n` +
+            `Manifest: ${result.manifestPath}\n\n` +
+            `To assemble into video, run the ffmpeg command from the manifest.`,
+        },
+      ],
+    };
+  }
+);
+
+// 24. Batch Actions
+server.registerTool(
+  'browser_batch',
+  {
+    description:
+      'Execute multiple browser tools in a single call. Actions run sequentially and stop on first error. ' +
+      'Reduces agent round-trips for multi-step workflows like: click → wait → screenshot → check metrics.',
+    inputSchema: {
+      actions: z
+        .array(
+          z.object({
+            tool: z.string().describe('Tool name to execute (e.g. browser_click, browser_screenshot)'),
+            args: z
+              .record(z.string(), z.unknown())
+              .describe('Arguments for the tool'),
+          })
+        )
+        .describe('Array of actions to execute sequentially'),
+    },
+  },
+  async ({ actions }) => {
+    const result = await browserManager.executeBatch(
+      actions as { tool: string; args: Record<string, unknown> }[]
+    );
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
 async function run() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
