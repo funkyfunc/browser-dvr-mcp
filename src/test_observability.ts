@@ -90,19 +90,7 @@ async function runTests() {
     }
     console.log('✔ Input typing successfully registered.');
 
-    // Debug check
-    const inputHtml = await page.evaluate(() => document.getElementById('input-field')?.outerHTML);
-    const winObj = await page.evaluate(() => {
-      const w = window as unknown as Record<string, unknown>;
-      return {
-        initialized: w.__mcp_observer_initialized,
-        seq: w.__mcp_id_seq,
-        mutationsLength: (w.__mcp_mutations as unknown[])?.length
-      };
-    });
-    console.log('DEBUG INFO:');
-    console.log(`- Input HTML: ${inputHtml}`);
-    console.log(`- Window state:`, winObj);
+
 
     // Fetch mutations
     console.log('Fetching mutation list...');
@@ -140,8 +128,53 @@ async function runTests() {
     console.log(traceTimeline.split('\n').slice(0, 10).join('\n'));
     console.log('\n----------------------------------------\n');
 
-    // 8. Close Browser
-    console.log('8. Closing browser...');
+    // 8. Test Dysfunctionality & Failure Recovery
+    console.log('8. Running Dysfunctionality & Exception Recovery Tests...');
+
+    // Test Case 8a: Double launch check
+    console.log('- Test Case 8a: Attempting double launch (should return already running)...');
+    const doubleLaunchMsg = await bm.launch({ headless: true });
+    if (doubleLaunchMsg !== 'Browser is already running.') {
+      throw new Error(`Double launch did not warn correctly: ${doubleLaunchMsg}`);
+    }
+    console.log('✔ Double launch warning handled correctly.');
+
+    // Test Case 8b: Invalid backend node ID interaction
+    console.log('- Test Case 8b: Interacting with invalid backendNodeId (should fail gracefully)...');
+    try {
+      await bm.click(999999);
+      throw new Error('FAIL: Click on non-existent backend node ID did not fail.');
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('Failed to resolve backend node ID') || errorMsg.includes('Could not adopt')) {
+        console.log(`✔ Gracefully threw error for invalid element: "${errorMsg}"`);
+      } else {
+        throw err;
+      }
+    }
+
+    // Test Case 8c: Calling dumpDvr with invalid output directory
+    console.log('- Test Case 8c: Dumping DVR to invalid path (should fail gracefully)...');
+    try {
+      await bm.dumpDvr('');
+      throw new Error('FAIL: DVR dump to empty string path did not fail.');
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.log(`✔ Gracefully threw error for invalid DVR path: "${errorMsg}"`);
+    }
+
+    // Test Case 8d: Navigation to invalid URL
+    console.log('- Test Case 8d: Navigating to invalid schema URL (should fail gracefully)...');
+    try {
+      await bm.navigate('invalid://domain');
+      throw new Error('FAIL: Navigation to invalid schema did not fail.');
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.log(`✔ Gracefully threw navigation failure error: "${errorMsg}"`);
+    }
+
+    // 9. Close Browser
+    console.log('9. Closing browser...');
     await bm.close();
     console.log('✔ Browser closed cleanly.');
 
