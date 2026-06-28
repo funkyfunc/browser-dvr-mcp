@@ -4,20 +4,20 @@ This roadmap outlines the phases of development for the Agentic Browser Observab
 
 ---
 
-## Phase 1: Core Perception & Spatial Validation (Current Focus)
-- [ ] **Unified Semantic Accessibility Graph (USAG)**
+## Phase 1: Core Perception & Spatial Validation (Complete)
+- [x] **Unified Semantic Accessibility Graph (USAG)**
   - Flatten DOMs, Shadow DOMs, and Out-of-Process Iframes (OOPIFs) into an LLM-optimized Markdown format using CDP `Accessibility.getFullAXTree`.
-- [ ] **Pre-Execution Spatial Validation (Intercept Guard)**
+- [x] **Pre-Execution Spatial Validation (Intercept Guard)**
   - Validate mathematically that a target node is not occluded by a modal, overlay, or sticky header using CDP geometric APIs before dispatching a click/interaction event.
-- [ ] **Object Permanence & Differential Streaming**
+- [x] **Object Permanence & Differential Streaming**
   - Assign immutable integer IDs to DOM nodes upon serialization (emulating `rrweb`) to stream highly compressed JSON deltas of DOM mutations instead of raw massive HTML dumps.
 
-## Phase 2: Temporal Observability & Telemetry (Current Focus)
-- [ ] **The DVR Telemetry Loop**
+## Phase 2: Temporal Observability & Telemetry (Complete)
+- [x] **The DVR Telemetry Loop**
   - Maintain a rolling 10-second buffer of compressed viewport frames, network states, and console logs utilizing background Node.js `worker_threads` and CDP asynchronous `Page.startScreencast`.
-- [ ] **Human-to-Agent Session Handoff**
+- [x] **Human-to-Agent Session Handoff**
   - Expose the local browser profile so a human can manually reproduce a physical interaction bug, with the server packaging the resulting telemetry trace for the AI.
-- [ ] **Intelligent Context Compression**
+- [x] **Intelligent Context Compression**
   - Filter raw browser telemetry (e.g., hundreds of mousemove events) into semantic text narratives.
 
 ## Phase 3: Advanced Rendering & State Diagnostics (Future)
