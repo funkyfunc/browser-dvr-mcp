@@ -164,6 +164,7 @@ export class BrowserManager {
   private cdpSession: CDPSession | null = null;
   private worker: Worker | null = null;
   private screencastActive = false;
+  private fetchInterceptHandler: ((...args: unknown[]) => void) | null = null;
 
   constructor() {
     this.initWorker();
@@ -538,8 +539,16 @@ export class BrowserManager {
     const session = this.cdpSession as unknown as {
       send(method: string, args?: Record<string, unknown>): Promise<unknown>;
     };
-    await session.send('Rendering.setShowPaintRects', { show: enabled });
-    return `Paint flashing set to: ${enabled}`;
+    try {
+      await session.send('Rendering.setShowPaintRects', { show: enabled });
+      return `Paint flashing set to: ${enabled}`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("wasn't found") || msg.includes('not supported')) {
+        return `Paint flashing is unavailable in headless shell mode. Launch with headless:false for visual debugging. (Requested: ${enabled})`;
+      }
+      throw err;
+    }
   }
 
   public async getPerformanceMetrics(): Promise<{ name: string; value: number }[]> {
@@ -615,8 +624,21 @@ export class BrowserManager {
     const nodeMetric = performanceMetrics.find((m) => m.name === 'Nodes');
     const activeNodesCount = nodeMetric ? nodeMetric.value : 0;
 
-    const domElementsCount = await this.page.evaluate(() => {
-      return document.getElementsByTagName('*').length;
+    const domNodeCounts = await this.page.evaluate(() => {
+      // Count ALL node types via TreeWalker to match CDP's Nodes metric
+      // (which counts elements, text nodes, comments, doctypes, etc.)
+      const walker = document.createTreeWalker(
+        document,
+        NodeFilter.SHOW_ALL,
+      );
+      let totalNodes = 1; // count the root (document)
+      let elementCount = 0;
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        totalNodes++;
+        if (node.nodeType === Node.ELEMENT_NODE) elementCount++;
+      }
+      return { totalNodes, elementCount };
     });
 
     const bodyBrightnessAndCls = (await this.page.evaluate(`(() => {
@@ -624,12 +646,25 @@ export class BrowserManager {
       const cls = win.__mcp_cls || 0;
       let bodyBrightness = 255;
       const bodyBg = window.getComputedStyle(document.body).backgroundColor;
-      const match = bodyBg.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
-      if (match) {
-        const r = parseInt(match[1], 10);
-        const g = parseInt(match[2], 10);
-        const b = parseInt(match[3], 10);
-        bodyBrightness = (r + g + b) / 3;
+      const rgbaMatch = bodyBg.match(/rgba\\((\\d+),\\s*(\\d+),\\s*(\\d+),\\s*([\\d.]+)\\)/);
+      if (rgbaMatch) {
+        const alpha = parseFloat(rgbaMatch[4]);
+        if (alpha === 0) {
+          bodyBrightness = 255;
+        } else {
+          const r = parseInt(rgbaMatch[1], 10);
+          const g = parseInt(rgbaMatch[2], 10);
+          const b = parseInt(rgbaMatch[3], 10);
+          bodyBrightness = (r + g + b) / 3;
+        }
+      } else {
+        const rgbMatch = bodyBg.match(/rgb\\((\\d+),\\s*(\\d+),\\s*(\\d+)\\)/);
+        if (rgbMatch) {
+          const r = parseInt(rgbMatch[1], 10);
+          const g = parseInt(rgbMatch[2], 10);
+          const b = parseInt(rgbMatch[3], 10);
+          bodyBrightness = (r + g + b) / 3;
+        }
       }
       return { cls, bodyBrightness };
     })()`)) as { cls: number; bodyBrightness: number };
@@ -638,8 +673,8 @@ export class BrowserManager {
       layoutShiftScore: bodyBrightnessAndCls.cls,
       bodyBrightness: bodyBrightnessAndCls.bodyBrightness,
       activeNodesCount,
-      domElementsCount,
-      detachedNodesCount: Math.max(0, activeNodesCount - domElementsCount),
+      domElementsCount: domNodeCounts.elementCount,
+      detachedNodesCount: Math.max(0, activeNodesCount - domNodeCounts.totalNodes),
     };
   }
 
@@ -670,11 +705,17 @@ export class BrowserManager {
   ): Promise<string> {
     if (!this.cdpSession) throw new Error('No active CDP session.');
 
+    // Remove any previously attached handler to prevent accumulation
+    if (this.fetchInterceptHandler) {
+      this.cdpSession.off('Fetch.requestPaused', this.fetchInterceptHandler);
+      this.fetchInterceptHandler = null;
+    }
+
     await this.cdpSession.send('Fetch.enable', {
       patterns: [{ urlPattern: pattern }],
     });
 
-    this.cdpSession.on('Fetch.requestPaused', async (event) => {
+    const handler = async (event: { requestId: string }) => {
       const requestId = event.requestId;
 
       if (action === 'fail') {
@@ -689,13 +730,23 @@ export class BrowserManager {
       } else {
         await this.cdpSession?.send('Fetch.continueRequest', { requestId }).catch(() => {});
       }
-    });
+    };
+
+    this.fetchInterceptHandler = handler as (...args: unknown[]) => void;
+    this.cdpSession.on('Fetch.requestPaused', this.fetchInterceptHandler);
 
     return `Interception enabled for pattern '${pattern}' with action '${action}'`;
   }
 
   public async disableRequestInterception(): Promise<string> {
     if (!this.cdpSession) throw new Error('No active CDP session.');
+
+    // Remove the listener before disabling Fetch to prevent leak
+    if (this.fetchInterceptHandler) {
+      this.cdpSession.off('Fetch.requestPaused', this.fetchInterceptHandler);
+      this.fetchInterceptHandler = null;
+    }
+
     await this.cdpSession.send('Fetch.disable');
     return 'Request interception disabled';
   }
