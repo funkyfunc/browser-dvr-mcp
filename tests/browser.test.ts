@@ -540,12 +540,15 @@ describe('BrowserManager', () => {
       await new Promise((r) => setTimeout(r, 2000));
     });
 
-    it('should stop recording and produce output', async () => {
+    it('should stop recording and produce MP4 video', async () => {
       const result = await bm.stopRecording();
       expect(result.status).toBe('success');
       expect(result.outputDir).toBe(recordingDir);
       expect(result.frameCount).toBeGreaterThan(0);
       expect(result.durationSeconds).toBeGreaterThanOrEqual(1);
+      // ffmpeg-static should have assembled an MP4
+      expect(result.videoPath).toBeTruthy();
+      expect(existsSync(result.videoPath!)).toBe(true);
     });
 
     it('should have written frame files', () => {
@@ -560,7 +563,7 @@ describe('BrowserManager', () => {
       expect(existsSync(manifestPath)).toBe(true);
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
       expect(manifest.frameCount).toBeGreaterThan(0);
-      expect(manifest.ffmpegCommand).toContain('ffmpeg');
+      expect(manifest.videoPath).toBeTruthy();
       expect(manifest.frames).toBeInstanceOf(Array);
     });
 

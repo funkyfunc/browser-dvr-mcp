@@ -357,19 +357,18 @@ server.registerTool(
   },
   async () => {
     const result = await browserManager.stopRecording();
+    const lines = [
+      `Recording stopped.`,
+      `Output: ${result.outputDir}`,
+      `Frames: ${result.frameCount}`,
+      `Duration: ${result.durationSeconds}s`,
+    ];
+    if (result.videoPath) {
+      lines.push(`Video: ${result.videoPath}`);
+    }
+    lines.push(`Manifest: ${result.manifestPath}`);
     return {
-      content: [
-        {
-          type: 'text',
-          text:
-            `Recording stopped.\n` +
-            `Output: ${result.outputDir}\n` +
-            `Frames: ${result.frameCount}\n` +
-            `Duration: ${result.durationSeconds}s\n` +
-            `Manifest: ${result.manifestPath}\n\n` +
-            `To assemble into video, run the ffmpeg command from the manifest.`,
-        },
-      ],
+      content: [{ type: 'text', text: lines.join('\n') }],
     };
   }
 );

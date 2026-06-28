@@ -4,7 +4,12 @@ import { writeFile, mkdir } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { Worker } from 'worker_threads';
+import { execFileSync } from 'child_process';
+import { createRequire } from 'module';
 import { formatAccessibilityTree, AXNode } from './usag.js';
+
+const require = createRequire(import.meta.url);
+const ffmpegPath: string | null = require('ffmpeg-static');
 
 // ─── Recording Types ────────────────────────────────────────────────────────
 
@@ -943,6 +948,7 @@ export class BrowserManager {
     frameCount: number;
     durationSeconds: number;
     manifestPath: string;
+    videoPath: string | null;
   }> {
     if (!this.activeRecording) {
       throw new Error('No recording in progress. Use browser_start_recording first.');
@@ -966,20 +972,42 @@ export class BrowserManager {
       writeFileSync(join(outputDir, filename), Buffer.from(frames[i].data, 'base64'));
     }
 
-    // Write a manifest with timestamps for potential video assembly
+    const fps = frames.length > 0 ? Math.max(1, Math.round(frames.length / Math.max(durationSeconds, 1))) : 1;
+    const videoOutputPath = join(outputDir, 'recording.mp4');
+
+    // Automatically assemble MP4 using bundled ffmpeg
+    let videoPath: string | null = null;
+    if (ffmpegPath && frames.length > 0) {
+      try {
+        execFileSync(ffmpegPath, [
+          '-y',
+          '-framerate', String(fps),
+          '-i', join(outputDir, 'frame_%05d.jpg'),
+          '-c:v', 'libx264',
+          '-pix_fmt', 'yuv420p',
+          '-movflags', '+faststart',
+          videoOutputPath,
+        ], { timeout: 30_000 });
+        videoPath = videoOutputPath;
+      } catch (err) {
+        console.error('ffmpeg assembly failed, frames are still available:', err);
+      }
+    }
+
+    // Write manifest with timestamps
     const manifest = {
       frameCount: frames.length,
       durationSeconds,
       startedAt: new Date(recording.startedAt).toISOString(),
       stoppedAt: new Date().toISOString(),
-      fps: frames.length > 0 ? Math.round(frames.length / Math.max(durationSeconds, 1)) : 0,
+      fps,
+      videoPath,
       frames: frames.map((f, i) => ({
         index: i,
         file: `frame_${String(i).padStart(5, '0')}.jpg`,
         timestamp: f.timestamp,
         relativeMs: f.timestamp - recording.startedAt,
       })),
-      ffmpegCommand: `ffmpeg -framerate ${Math.round(frames.length / Math.max(durationSeconds, 1))} -i "${outputDir}/frame_%05d.jpg" -c:v libx264 -pix_fmt yuv420p "${outputDir}/recording.mp4"`,
     };
 
     const manifestPath = join(outputDir, 'manifest.json');
@@ -993,6 +1021,7 @@ export class BrowserManager {
       frameCount: frames.length,
       durationSeconds,
       manifestPath,
+      videoPath,
     };
   }
 
