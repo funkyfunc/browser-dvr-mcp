@@ -54,7 +54,7 @@ async function runTests() {
 
     // 4. Test normal click
     console.log('4. Testing clickable button (should succeed)...');
-    const clickResult = await bm.click(clickableBtnNode.backendDOMNodeId);
+    const clickResult = await bm.click({ backendNodeId: clickableBtnNode.backendDOMNodeId });
     console.log(clickResult);
 
     // Verify click side effect in browser context
@@ -67,7 +67,7 @@ async function runTests() {
     // 5. Test Intercept Guard occlusion validation
     console.log('5. Testing occluded button (should fail)...');
     try {
-      await bm.click(occludedBtnNode.backendDOMNodeId);
+      await bm.click({ backendNodeId: occludedBtnNode.backendDOMNodeId });
       throw new Error('FAIL: Click on occluded element did not trigger an error.');
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -81,7 +81,7 @@ async function runTests() {
 
     // 6. Test typing and mutation tracking
     console.log('6. Testing text typing and mutation delta tracking...');
-    await bm.type(inputNode.backendDOMNodeId, 'Observability check');
+    await bm.type({ backendNodeId: inputNode.backendDOMNodeId, text: 'Observability check' });
     
     // Check page text value is updated
     const inputValue = await page.evaluate(() => (document.getElementById('input-field') as HTMLInputElement)?.value);
@@ -142,7 +142,7 @@ async function runTests() {
     // Test Case 8b: Invalid backend node ID interaction
     console.log('- Test Case 8b: Interacting with invalid backendNodeId (should fail gracefully)...');
     try {
-      await bm.click(999999);
+      await bm.click({ backendNodeId: 999999 });
       throw new Error('FAIL: Click on non-existent backend node ID did not fail.');
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);

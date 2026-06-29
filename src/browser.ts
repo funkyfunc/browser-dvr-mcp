@@ -1,5 +1,6 @@
 import puppeteer, { Browser, Page, CDPSession, ElementHandle } from 'puppeteer-core';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import * as os from 'os';
 import { writeFile, mkdir } from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -231,20 +232,15 @@ export class BrowserManager {
   }
 
   public async launch(options: { headless?: boolean; userDataDir?: string } = {}): Promise<string> {
-    if (this.browser) {
-      return 'Browser is already running.';
-    }
+    if (this.browser) return 'Browser is already running.';
 
-    const executablePath = this.findChromeExecutable();
-    const headless = options.headless !== false; // default headless to true
+    const headless = options.headless ?? true;
     this.isHeadless = headless;
 
-    const launchArgs: string[] = ['--no-sandbox', '--disable-setuid-sandbox'];
-    
     this.browser = await puppeteer.launch({
-      executablePath,
-      headless: headless ? true : false,
-      args: launchArgs,
+      executablePath: this.findChromeExecutable(),
+      headless: headless,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
       userDataDir: options.userDataDir,
       defaultViewport: { width: 1280, height: 720 },
     });
@@ -285,8 +281,10 @@ export class BrowserManager {
     // Inject object permanence mutation observer
     await page.evaluateOnNewDocument(MUTATION_INJECT_SCRIPT);
     
-    // Evaluate it directly too on the current initial page loading blank target
-    await page.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+    // Evaluate it directly too on all current frames (including existing iframes)
+    for (const frame of page.frames()) {
+      await frame.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+    }
 
     // Hook telemetry listeners
     page.on('console', (msg) => {
@@ -370,8 +368,10 @@ export class BrowserManager {
       await this.launch();
     }
     await this.page!.goto(url, { waitUntil: 'load' });
-    // Re-inject mutation observer manually just in case
-    await this.page!.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+    // Re-inject mutation observer manually to all frames just in case
+    for (const frame of this.page!.frames()) {
+      await frame.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+    }
     this.session?.addNavigation(url);
     return `Navigated to ${url}`;
   }
@@ -394,115 +394,94 @@ export class BrowserManager {
     });
   }
 
-  /**
-   * Mathematically validates if an element is occluded before interaction.
-   * Returns validation coordinates or throws error detailing occlusion reasons.
-   */
-  private async validateSpatialGuard(backendNodeId: number): Promise<{ x: number; y: number }> {
-    if (!this.page) {
-      throw new Error('No active page session.');
-    }
-
+  private async validateSpatialGuard(target: number | { backendNodeId?: number; mcpId?: string }): Promise<{ x: number; y: number }> {
+    const options = typeof target === 'number' ? { backendNodeId: target } : target;
+    if (!this.page) throw new Error('No active page session.');
     let elementHandle;
     try {
-      const frame = this.page.mainFrame() as unknown as {
-        mainRealm(): {
-          adoptBackendNode(id: number): Promise<ElementHandle<Element>>;
+      if (options.backendNodeId !== undefined) {
+        const frame = this.page.mainFrame() as unknown as {
+          mainRealm(): { adoptBackendNode(id: number): Promise<ElementHandle<Element>> };
         };
-      };
-      elementHandle = await frame.mainRealm().adoptBackendNode(backendNodeId);
+        elementHandle = await frame.mainRealm().adoptBackendNode(options.backendNodeId);
+      } else if (options.mcpId !== undefined) {
+        for (const frame of this.page.frames()) {
+          elementHandle = await frame.$(`[data-mcp-id="${options.mcpId}"]`);
+          if (elementHandle) break;
+        }
+      } else {
+        throw new Error('Must provide either backendNodeId or mcpId');
+      }
     } catch (err) {
-      throw new Error(`Failed to resolve backend node ID ${backendNodeId}: ${err}`);
+      throw new Error(`Failed to resolve backend node ID ${options.backendNodeId}: ${err}`);
     }
-
-    if (!elementHandle) {
-      throw new Error(`Could not adopt backend node ID ${backendNodeId}`);
-    }
-
+    if (!elementHandle) throw new Error(`Could not find element.`);
     try {
-      const checkResult = (await this.page.evaluate((el: Element) => {
-        if (!(el instanceof Element)) {
-          return { error: 'Node is not a DOM Element' };
-        }
-        
+      const checkResult = (await elementHandle.evaluate((el: Element) => {
+        if (!(el instanceof Element)) return { error: 'Node is not a DOM Element' };
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) {
-          return { error: 'Element is invisible (zero width or height)' };
-        }
-
-        // Calculate center coordinate
+        if (rect.width === 0 || rect.height === 0) return { error: 'Element is invisible' };
         const x = rect.left + rect.width / 2;
         const y = rect.top + rect.height / 2;
-
-        // Perform raycast check at coordinates
         const topEl = document.elementFromPoint(x, y);
-        if (!topEl) {
-          return { error: `No element found at center coordinates (${x}, ${y})` };
-        }
-
-        // Check if the top element is the target element or its child/parent
+        if (!topEl) return { error: `No element found at center coordinates` };
         const contains = el.contains(topEl) || topEl.contains(el);
         if (!contains) {
-          const occluderInfo = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className ? '.' + topEl.className.trim().split(/\s+/).join('.') : ''}`;
-          return {
-            occluded: true,
-            occluder: occluderInfo,
-            coordinates: { x, y }
-          };
+          const occluderInfo = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className ? '.' + topEl.className.trim().split(/\\s+/).join('.') : ''}`;
+          return { occluded: true, occluder: occluderInfo, coordinates: { x, y } };
         }
-
-        return {
-          occluded: false,
-          coordinates: { x, y }
-        };
-      }, elementHandle)) as {
-        error?: string;
-        occluded?: boolean;
-        occluder?: string;
-        coordinates?: { x: number; y: number };
-      };
-
-      if (checkResult.error) {
-        throw new Error(checkResult.error);
-      }
-
-      if (checkResult.occluded) {
-        throw new Error(`Pre-Execution Spatial Validation Failed: Element ID ${backendNodeId} is occluded by '<${checkResult.occluder}>' at coordinates (${checkResult.coordinates?.x}, ${checkResult.coordinates?.y}).`);
-      }
-
-      // Return absolute viewport coordinates (adding frame offsets if any, though standard is viewport layout)
-      return checkResult.coordinates!;
+        return { occluded: false, coordinates: { x, y } };
+      })) as any;
+      if (checkResult.error) throw new Error(checkResult.error);
+      if (checkResult.occluded) throw new Error(`Pre-Execution Spatial Validation Failed: Element is occluded by '<${checkResult.occluder}>' at coordinates (${checkResult.coordinates?.x}, ${checkResult.coordinates?.y}).`);
+      return checkResult.coordinates;
     } finally {
-      // Dispose of the element handle to avoid leaks
       await elementHandle.dispose().catch(() => {});
     }
   }
 
-  public async click(backendNodeId: number): Promise<string> {
+  public async click(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number] }): Promise<string> {
+    const options = typeof target === 'number' ? { backendNodeId: target } : target;
     if (!this.page) throw new Error('No active page session.');
-    const coords = await this.validateSpatialGuard(backendNodeId);
-    await this.page.mouse.click(coords.x, coords.y);
-    this.session?.addInteraction({ type: 'click', timestamp: Date.now(), target: `backendNodeId:${backendNodeId}`, x: coords.x, y: coords.y });
-    return `Successfully clicked element ID ${backendNodeId} at coordinates (${coords.x}, ${coords.y})`;
+    let x: number, y: number;
+    if (options.coordinate) {
+      [x, y] = options.coordinate;
+    } else {
+      const coords = await this.validateSpatialGuard(options);
+      x = coords.x; y = coords.y;
+    }
+    await this.page.mouse.click(x, y);
+    return `Successfully clicked element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})`;
   }
 
-  public async type(backendNodeId: number, text: string): Promise<string> {
+  public async type(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; text: string }, fallbackText?: string): Promise<string> {
+    const options = typeof target === 'number' ? { backendNodeId: target, text: fallbackText! } : target;
     if (!this.page) throw new Error('No active page session.');
-    const coords = await this.validateSpatialGuard(backendNodeId);
-    await this.page.mouse.click(coords.x, coords.y);
-    // Double click to focus / clear
-    await this.page.mouse.click(coords.x, coords.y, { count: 2 });
-    await this.page.keyboard.type(text);
-    this.session?.addInteraction({ type: 'type', timestamp: Date.now(), target: `backendNodeId:${backendNodeId}`, text });
-    return `Successfully typed text into element ID ${backendNodeId}`;
+    let x: number, y: number;
+    if (options.coordinate) {
+      [x, y] = options.coordinate;
+    } else {
+      const coords = await this.validateSpatialGuard(options);
+      x = coords.x; y = coords.y;
+    }
+    await this.page.mouse.click(x, y);
+    await this.page.mouse.click(x, y, { count: 2 });
+    await this.page.keyboard.type(options.text);
+    return `Successfully typed text.`;
   }
 
-  public async hover(backendNodeId: number): Promise<string> {
+  public async hover(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number] }): Promise<string> {
+    const options = typeof target === 'number' ? { backendNodeId: target } : target;
     if (!this.page) throw new Error('No active page session.');
-    const coords = await this.validateSpatialGuard(backendNodeId);
-    await this.page.mouse.move(coords.x, coords.y);
-    this.session?.addInteraction({ type: 'hover', timestamp: Date.now(), target: `backendNodeId:${backendNodeId}`, x: coords.x, y: coords.y });
-    return `Successfully hovered over element ID ${backendNodeId} at coordinates (${coords.x}, ${coords.y})`;
+    let x: number, y: number;
+    if (options.coordinate) {
+      [x, y] = options.coordinate;
+    } else {
+      const coords = await this.validateSpatialGuard(options);
+      x = coords.x; y = coords.y;
+    }
+    await this.page.mouse.move(x, y);
+    return `Successfully hovered at (${x}, ${y})`;
   }
 
   public async dumpDvr(outputPath: string): Promise<{ success: boolean; frameCount: number; logCount: number; outputPath: string }> {
@@ -747,10 +726,6 @@ export class BrowserManager {
     return { current: currentState, diff, hasPrevious: diff !== null };
   }
 
-  /**
-   * Compute a shallow diff between two framework state snapshots.
-   * Returns an object describing added, removed, and changed keys.
-   */
   private computeStateDiff(prev: any, curr: any): unknown {
     if (typeof prev !== 'object' || typeof curr !== 'object' || prev === null || curr === null) {
       return prev === curr ? null : { previous: prev, current: curr };
@@ -790,13 +765,11 @@ export class BrowserManager {
     const activeNodesCount = nodeMetric ? nodeMetric.value : 0;
 
     const domNodeCounts = await this.page.evaluate(() => {
-      // Count ALL node types via TreeWalker to match CDP's Nodes metric
-      // (which counts elements, text nodes, comments, doctypes, etc.)
       const walker = document.createTreeWalker(
         document,
         NodeFilter.SHOW_ALL,
       );
-      let totalNodes = 1; // count the root (document)
+      let totalNodes = 1;
       let elementCount = 0;
       let node: Node | null;
       while ((node = walker.nextNode())) {
@@ -885,7 +858,6 @@ export class BrowserManager {
   ): Promise<string> {
     if (!this.cdpSession) throw new Error('No active CDP session.');
 
-    // Remove any previously attached handler to prevent accumulation
     if (this.fetchInterceptHandler) {
       this.cdpSession.off('Fetch.requestPaused', this.fetchInterceptHandler);
       this.fetchInterceptHandler = null;
@@ -921,7 +893,6 @@ export class BrowserManager {
   public async disableRequestInterception(): Promise<string> {
     if (!this.cdpSession) throw new Error('No active CDP session.');
 
-    // Remove the listener before disabling Fetch to prevent leak
     if (this.fetchInterceptHandler) {
       this.cdpSession.off('Fetch.requestPaused', this.fetchInterceptHandler);
       this.fetchInterceptHandler = null;
@@ -951,7 +922,6 @@ export class BrowserManager {
       });
     }
 
-    // Restore default viewport
     await this.page.setViewport({ width: 1280, height: 720 });
     return results;
   }
@@ -959,8 +929,6 @@ export class BrowserManager {
   public getActivePage(): Page | null {
     return this.page;
   }
-
-  // ─── Screenshot ──────────────────────────────────────────────────────────
 
   public async screenshot(options: {
     savePath?: string;
@@ -977,7 +945,6 @@ export class BrowserManager {
     let buffer: string;
 
     if (options.backendNodeId !== undefined) {
-      // Element-specific screenshot
       if (!this.cdpSession) throw new Error('No active CDP session.');
       const { object } = (await this.cdpSession.send('DOM.resolveNode', {
         backendNodeId: options.backendNodeId,
@@ -991,7 +958,6 @@ export class BrowserManager {
         backendNodeId: options.backendNodeId,
       })) as { model: { content: number[] } };
 
-      // content quad: [x1,y1, x2,y2, x3,y3, x4,y4]
       const q = model.content;
       const x = Math.min(q[0], q[2], q[4], q[6]);
       const y = Math.min(q[1], q[3], q[5], q[7]);
@@ -1006,10 +972,8 @@ export class BrowserManager {
 
       buffer = (result as { data: string }).data;
 
-      // Release object
       await this.cdpSession.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
     } else {
-      // Full viewport or full page screenshot
       buffer = (await this.page.screenshot({
         encoding,
         type: format,
@@ -1020,7 +984,6 @@ export class BrowserManager {
 
     const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
 
-    // Save to disk if requested
     if (options.savePath) {
       await mkdir(join(options.savePath, '..'), { recursive: true }).catch(() => {});
       await writeFile(options.savePath, Buffer.from(buffer, 'base64'));
@@ -1030,39 +993,30 @@ export class BrowserManager {
     return { data: buffer, mimeType };
   }
 
-  // ─── Screen Recording ───────────────────────────────────────────────────
-
   public async startRecording(options: {
     outputDir?: string;
   } = {}): Promise<string> {
     if (this.activeRecording) {
-      throw new Error(
-        'A recording is already in progress. Call stopRecording first to finalize the current recording.'
-      );
+      throw new Error('A recording is already in progress.');
     }
     if (!this.cdpSession) throw new Error('No active CDP session. Launch browser first.');
 
-    const outputDir = options.outputDir || join(process.cwd(), 'dist', 'recordings', `rec_${Date.now()}`);
+    const outputDir = options.outputDir || join(os.tmpdir(), 'best-browser-recordings', `rec_${Date.now()}`);
     mkdirSync(outputDir, { recursive: true });
 
     const frames: RecordingFrame[] = [];
 
-    // Start a dedicated high-quality screencast for recording
-    // (This is separate from the DVR screencast which is low-res)
     const handler = (event: { data: string; metadata: { timestamp: number }; sessionId: number }) => {
       frames.push({
         data: event.data,
         timestamp: Date.now(),
       });
-      // Acknowledge frame to keep screencast flowing
       this.cdpSession?.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
     };
 
     this.recordingFrameHandler = handler as (...args: unknown[]) => void;
     this.cdpSession.on('Page.screencastFrame', this.recordingFrameHandler);
 
-    // If screencast isn't already active (from DVR), start it
-    // If it is active, the existing screencast will feed both DVR and recording handlers
     if (!this.screencastActive) {
       await this.cdpSession.send('Page.startScreencast', {
         format: 'jpeg',
@@ -1073,7 +1027,6 @@ export class BrowserManager {
       });
     }
 
-    // Safety auto-stop timer
     const autoStopTimer = setTimeout(async () => {
       console.error(`Recording auto-stopped after ${MAX_RECORDING_DURATION_MS / 1000}s safety limit.`);
       try { await this.stopRecording(); } catch { /* best effort */ }
@@ -1086,12 +1039,7 @@ export class BrowserManager {
       outputDir,
     };
 
-    return (
-      `Recording started — frames are being captured now. ` +
-      `Proceed with interactions immediately; there is no warmup delay. ` +
-      `Output directory: ${outputDir}. ` +
-      `Call browser_stop_recording when done. Auto-stops after 5 minutes.`
-    );
+    return `Recording started. Output directory: ${outputDir}.`;
   }
 
   public async stopRecording(): Promise<{
@@ -1103,13 +1051,12 @@ export class BrowserManager {
     videoPath: string | null;
   }> {
     if (!this.activeRecording) {
-      throw new Error('No recording in progress. Use browser_start_recording first.');
+      throw new Error('No recording in progress.');
     }
 
     const recording = this.activeRecording;
     clearTimeout(recording.autoStopTimer);
 
-    // Remove the recording frame handler
     if (this.recordingFrameHandler && this.cdpSession) {
       this.cdpSession.off('Page.screencastFrame', this.recordingFrameHandler);
       this.recordingFrameHandler = null;
@@ -1118,7 +1065,6 @@ export class BrowserManager {
     const durationSeconds = Math.round((Date.now() - recording.startedAt) / 1000);
     const { frames, outputDir } = recording;
 
-    // Write frames to disk as numbered JPEGs
     for (let i = 0; i < frames.length; i++) {
       const filename = `frame_${String(i).padStart(5, '0')}.jpg`;
       writeFileSync(join(outputDir, filename), Buffer.from(frames[i].data, 'base64'));
@@ -1127,7 +1073,6 @@ export class BrowserManager {
     const fps = frames.length > 0 ? Math.max(1, Math.round(frames.length / Math.max(durationSeconds, 1))) : 1;
     const videoOutputPath = join(outputDir, 'recording.mp4');
 
-    // Automatically assemble MP4 using bundled ffmpeg
     let videoPath: string | null = null;
     if (ffmpegPath && frames.length > 0) {
       try {
@@ -1142,11 +1087,10 @@ export class BrowserManager {
         ], { timeout: 30_000 });
         videoPath = videoOutputPath;
       } catch (err) {
-        console.error('ffmpeg assembly failed, frames are still available:', err);
+        console.error('ffmpeg assembly failed', err);
       }
     }
 
-    // Write manifest with timestamps
     const manifest = {
       frameCount: frames.length,
       durationSeconds,
@@ -1176,8 +1120,6 @@ export class BrowserManager {
       videoPath,
     };
   }
-
-  // ─── Agent Observation & State Tools ────────────────────────────────────────
 
   public getConsoleLogs(clear: boolean = false) {
     const logs = [...this.consoleLogs];
@@ -1243,92 +1185,82 @@ export class BrowserManager {
     return 'Invalid storage operation or missing parameters.';
   }
 
-  public async assertElement(backendNodeId?: number, selector?: string, iframeSelector?: string) {
-    if (!this.page || !this.cdpSession) throw new Error('No active page session.');
-    
-    let objectId: string | undefined;
-    let resolvedBackendNodeId: number | undefined = backendNodeId;
+  public async assertElement(options: { backendNodeId?: number; mcpId?: string; selector?: string; iframeSelector?: string }): Promise<{
+    visible: boolean;
+    disabled: boolean;
+    text: string;
+    checked?: boolean;
+    backendNodeId?: number;
+    mcpId?: string;
+  }> {
+    if (!this.page) throw new Error('No active page session.');
+
+    const { backendNodeId, mcpId, selector, iframeSelector } = options;
+    let targetEl: ElementHandle<Element> | null = null;
+    let resolvedBackendNodeId = backendNodeId;
+    let resolvedMcpId = mcpId;
 
     if (backendNodeId) {
-      try {
-        const { object } = await this.cdpSession.send('DOM.resolveNode', { backendNodeId });
-        objectId = object.objectId;
-      } catch (err) {
-        throw new Error(`Failed to resolve node by backendNodeId ${backendNodeId}: ${err instanceof Error ? err.message : String(err)}`);
+      const frame = this.page.mainFrame() as unknown as {
+        mainRealm(): { adoptBackendNode(id: number): Promise<ElementHandle<Element>> };
+      };
+      targetEl = await frame.mainRealm().adoptBackendNode(backendNodeId);
+    } else if (mcpId) {
+      for (const frame of this.page.frames()) {
+        targetEl = await frame.$(`[data-mcp-id="${mcpId}"]`);
+        if (targetEl) break;
       }
     } else if (selector) {
-      // Determine the context to query (top-level or iframe)
       let context: Page | import('puppeteer-core').Frame = this.page;
       if (iframeSelector) {
         const iframeHandle = await this.page.$(iframeSelector);
-        if (!iframeHandle) throw new Error(`Iframe not found for selector: ${iframeSelector}`);
-        const frame = await iframeHandle.contentFrame();
-        if (!frame) throw new Error(`Could not access content frame for iframe: ${iframeSelector}`);
-        context = frame;
-      }
-
-      const handle = await context.$(selector);
-      if (!handle) throw new Error(`Element not found for selector: ${selector}`);
-
-      // Resolve the backendNodeId from the element handle via CDP
-      try {
-        const cdp = this.cdpSession;
-        // Get the remote object ID from the element handle
-        const remoteObject = handle.remoteObject?.() || (handle as any)._remoteObject;
-        if (remoteObject?.objectId) {
-          const { node } = await cdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
-          resolvedBackendNodeId = node.backendNodeId;
+        if (iframeHandle) {
+          const frame = await iframeHandle.contentFrame();
+          if (frame) context = frame;
         }
-      } catch {
-        // If we can't resolve the backendNodeId, continue without it
       }
+      targetEl = await context.$(selector);
 
-      const result = await handle.evaluate((el: any) => {
-        const rect = el.getBoundingClientRect();
-        return {
-          visible: rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden',
-          disabled: !!el.disabled,
-          checked: !!el.checked,
-          text: el.innerText || el.textContent,
-          innerHTML: el.innerHTML,
-          boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-        };
-      });
-      return { ...result, backendNodeId: resolvedBackendNodeId };
+      if (targetEl) {
+        try {
+          const mcpIdVal = await targetEl.evaluate((el) => el.getAttribute('data-mcp-id'));
+          if (mcpIdVal) resolvedMcpId = mcpIdVal;
+
+          const remoteObject = targetEl.remoteObject?.() || (targetEl as any)._remoteObject;
+          if (remoteObject?.objectId && this.cdpSession) {
+            const { node } = await this.cdpSession.send('DOM.describeNode', { objectId: remoteObject.objectId });
+            resolvedBackendNodeId = node.backendNodeId;
+          }
+        } catch { }
+      }
     } else {
-      throw new Error('Must provide either backendNodeId or selector');
+      throw new Error('Must provide either backendNodeId, mcpId, or selector');
     }
 
-    if (objectId) {
-      const result = await this.cdpSession.send('Runtime.callFunctionOn', {
-        objectId,
-        functionDeclaration: `function() {
-          const rect = this.getBoundingClientRect();
-          return {
-            visible: rect.width > 0 && rect.height > 0 && window.getComputedStyle(this).visibility !== 'hidden',
-            disabled: !!this.disabled,
-            checked: !!this.checked,
-            text: this.innerText || this.textContent,
-            innerHTML: this.innerHTML,
-            boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-          };
-        }`,
-        returnByValue: true
-      });
-      return { ...result.result.value, backendNodeId: resolvedBackendNodeId };
-    }
-    
-    throw new Error('Element not found');
+    if (!targetEl) throw new Error('Element not found');
+
+    const result = await targetEl.evaluate((el: Element) => {
+      const htmlEl = el as HTMLElement;
+      const rect = el.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+      const disabled = (htmlEl as any).disabled === true || el.getAttribute('aria-disabled') === 'true';
+      const text = htmlEl.innerText || el.textContent || '';
+      const isCheckboxOrRadio = el.tagName === 'INPUT' && (el.getAttribute('type') === 'checkbox' || el.getAttribute('type') === 'radio');
+      const checked = isCheckboxOrRadio ? (htmlEl as HTMLInputElement).checked : undefined;
+
+      return { visible, disabled, text: text.trim(), checked };
+    });
+
+    await targetEl.dispose().catch(() => {});
+
+    return { ...result, backendNodeId: resolvedBackendNodeId, mcpId: resolvedMcpId };
   }
 
-  // ─── Query Selector ─────────────────────────────────────────────────────
-
   public async querySelector(selector: string, iframeSelector?: string): Promise<{
-    matches: { tag: string; text: string; backendNodeId: number; boundingBox: { x: number; y: number; width: number; height: number } }[];
+    matches: { tag: string; text: string; mcpId: string; boundingBox: { x: number; y: number; width: number; height: number } }[];
   }> {
     if (!this.page || !this.cdpSession) throw new Error('No active page session.');
 
-    // Determine the context to query (top-level or iframe)
     let context: Page | import('puppeteer-core').Frame = this.page;
     if (iframeSelector) {
       const iframeHandle = await this.page.$(iframeSelector);
@@ -1338,7 +1270,6 @@ export class BrowserManager {
       context = frame;
     }
 
-    // Support XPath if selector starts with 'xpath/'
     const isXPath = selector.startsWith('xpath/');
     let handles: ElementHandle<Element>[];
 
@@ -1349,36 +1280,30 @@ export class BrowserManager {
       handles = await context.$$(selector) as ElementHandle<Element>[];
     }
 
-    const cdp = this.cdpSession;
-    const matches: { tag: string; text: string; backendNodeId: number; boundingBox: { x: number; y: number; width: number; height: number } }[] = [];
+    const matches: { tag: string; text: string; mcpId: string; boundingBox: { x: number; y: number; width: number; height: number } }[] = [];
 
     for (const handle of handles) {
       try {
-        // Get element info via evaluate
         const info = await handle.evaluate((el: Element) => {
           const rect = el.getBoundingClientRect();
+          let mcpId = el.getAttribute('data-mcp-id');
+          if (!mcpId && (window as any).__mcp_id_seq) {
+            mcpId = String((window as any).__mcp_id_seq++);
+            el.setAttribute('data-mcp-id', mcpId);
+          }
           return {
             tag: el.tagName.toLowerCase(),
             text: ((el as HTMLElement).innerText || el.textContent || '').substring(0, 200).trim(),
             boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            mcpId: mcpId || ''
           };
         });
 
-        // Resolve backendNodeId via CDP
-        let backendNodeId = 0;
-        try {
-          const remoteObject = handle.remoteObject?.() || (handle as any)._remoteObject;
-          if (remoteObject?.objectId) {
-            const { node } = await cdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
-            backendNodeId = node.backendNodeId;
-          }
-        } catch {
-          // Skip if we can't resolve
+        if (info.mcpId) {
+          matches.push(info);
         }
-
-        matches.push({ ...info, backendNodeId });
       } catch {
-        // Element may have been removed from DOM between query and evaluation
+        // Ignore evaluation errors
       } finally {
         await handle.dispose().catch(() => {});
       }
@@ -1792,9 +1717,9 @@ export class BrowserManager {
     const results: { tool: string; success: boolean; result?: unknown; error?: string }[] = [];
 
     const toolMap: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
-      browser_click: (a) => this.click(a.backendNodeId as number),
-      browser_type: (a) => this.type(a.backendNodeId as number, a.text as string),
-      browser_hover: (a) => this.hover(a.backendNodeId as number),
+      browser_click: (a) => this.click({ backendNodeId: a.backendNodeId as number, mcpId: a.mcpId as string, coordinate: a.coordinate as [number, number] }),
+      browser_type: (a) => this.type({ backendNodeId: a.backendNodeId as number, mcpId: a.mcpId as string, coordinate: a.coordinate as [number, number], text: a.text as string }),
+      browser_hover: (a) => this.hover({ backendNodeId: a.backendNodeId as number, mcpId: a.mcpId as string, coordinate: a.coordinate as [number, number] }),
       browser_navigate: (a) => this.navigate(a.url as string),
       browser_get_accessibility_tree: () => this.getAccessibilityTree(),
       browser_get_mutations: () => this.getMutations(),
@@ -1817,7 +1742,7 @@ export class BrowserManager {
       browser_press_key: (a) => this.pressKey(a.key as string),
       browser_scroll: (a) => this.scroll(a.direction as any, a.amount as number),
       browser_manage_storage: (a) => this.manageStorage(a.action as any, a.type as any, a.key as string, a.value as string, a.domain as string),
-      browser_assert_element: (a) => this.assertElement(a.backendNodeId as number, a.selector as string, a.iframeSelector as string),
+      browser_assert_element: (a) => this.assertElement({ backendNodeId: a.backendNodeId as number, mcpId: a.mcpId as string, selector: a.selector as string, iframeSelector: a.iframeSelector as string }),
       browser_query_selector: (a) => this.querySelector(a.selector as string, a.iframeSelector as string),
       browser_evaluate: (a) => this.evaluate(a.expression as string),
       browser_simulate_tab_flow: (a) => this.simulateTabFlow(a.maxSteps as number),

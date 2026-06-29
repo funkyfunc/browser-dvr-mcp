@@ -78,13 +78,15 @@ server.registerTool(
 server.registerTool(
   'browser_click',
   {
-    description: 'Perform pre-execution spatial validation and click the target element by its backendNodeId.',
+    description: 'Perform pre-execution spatial validation and click the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or coordinate).',
     inputSchema: {
-      backendNodeId: z.number().describe('The backend DOM node ID of the element to click'),
+      backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to click'),
+      mcpId: z.string().optional().describe('The mcpId of the element to click (returned by query_selector)'),
+      coordinate: z.array(z.number()).optional().describe('Direct [x, y] coordinates to click, bypassing spatial validation'),
     },
   },
-  async ({ backendNodeId }) => {
-    const result = await browserManager.click(backendNodeId);
+  async ({ backendNodeId, mcpId, coordinate }) => {
+    const result = await browserManager.click({ backendNodeId, mcpId, coordinate: coordinate as [number, number] | undefined });
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -93,14 +95,16 @@ server.registerTool(
 server.registerTool(
   'browser_type',
   {
-    description: 'Perform pre-execution spatial validation and type text into the target element by its backendNodeId.',
+    description: 'Perform pre-execution spatial validation and type text into the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or coordinate).',
     inputSchema: {
-      backendNodeId: z.number().describe('The backend DOM node ID of the element to type into'),
+      backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to type into'),
+      mcpId: z.string().optional().describe('The mcpId of the element to type into (returned by query_selector)'),
+      coordinate: z.array(z.number()).optional().describe('Direct [x, y] coordinates to type into, bypassing spatial validation'),
       text: z.string().describe('The text string to type into the element'),
     },
   },
-  async ({ backendNodeId, text }) => {
-    const result = await browserManager.type(backendNodeId, text);
+  async ({ backendNodeId, mcpId, coordinate, text }) => {
+    const result = await browserManager.type({ backendNodeId, mcpId, coordinate: coordinate as [number, number] | undefined, text });
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -109,13 +113,15 @@ server.registerTool(
 server.registerTool(
   'browser_hover',
   {
-    description: 'Perform pre-execution spatial validation and hover over the target element by its backendNodeId.',
+    description: 'Perform pre-execution spatial validation and hover over the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or coordinate).',
     inputSchema: {
-      backendNodeId: z.number().describe('The backend DOM node ID of the element to hover over'),
+      backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to hover over'),
+      mcpId: z.string().optional().describe('The mcpId of the element to hover over (returned by query_selector)'),
+      coordinate: z.array(z.number()).optional().describe('Direct [x, y] coordinates to hover over, bypassing spatial validation'),
     },
   },
-  async ({ backendNodeId }) => {
-    const result = await browserManager.hover(backendNodeId);
+  async ({ backendNodeId, mcpId, coordinate }) => {
+    const result = await browserManager.hover({ backendNodeId, mcpId, coordinate: coordinate as [number, number] | undefined });
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -478,13 +484,14 @@ server.registerTool(
   { 
     description: 'Assert and retrieve the state (visible, disabled, text, checked, backendNodeId) of an element without pulling the full tree. Supports querying inside iframes.',
     inputSchema: { 
-      backendNodeId: z.number().optional().describe('The backend node ID of the element'),
-      selector: z.string().optional().describe('CSS selector (used if backendNodeId is omitted)'),
-      iframeSelector: z.string().optional().describe('CSS selector for an iframe to scope the query into (only used with selector)')
+      backendNodeId: z.number().optional().describe('The backend DOM node ID of the element'),
+      mcpId: z.string().optional().describe('The mcpId of the element (returned by query_selector)'),
+      selector: z.string().optional().describe('CSS or XPath selector of the element'),
+      iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe containing the element')
     }
   },
-  async ({ backendNodeId, selector, iframeSelector }) => {
-    const result = await browserManager.assertElement(backendNodeId, selector, iframeSelector);
+  async ({ backendNodeId, mcpId, selector, iframeSelector }) => {
+    const result = await browserManager.assertElement({ backendNodeId, mcpId, selector, iframeSelector });
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }
 );

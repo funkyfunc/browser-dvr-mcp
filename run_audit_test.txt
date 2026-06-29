@@ -1,0 +1,113 @@
+# ============================================================
+# Agentic Browser Observability MCP — Full Audit Test Script
+# 20 tools, end-to-end sanity check via run-mcp REPL mode
+# ============================================================
+
+# ------- Tool inventory -------
+tools/list
+
+# ------- T1: Ping -------
+tools/call ping {}
+
+# ------- T2: Launch browser (headless) -------
+tools/call browser_launch {"headless": true}
+
+# ------- T2b: Double-launch guard (edge case) -------
+tools/call browser_launch {"headless": true}
+
+# ------- T4: Navigate to test page -------
+tools/call browser_navigate {"url": "file:///Users/stompinggrounds/Development/best-browser-mcp/test_page.html"}
+
+# ------- T5: Accessibility tree (USAG) -------
+tools/call browser_get_accessibility_tree {}
+
+# ------- T9: DOM mutations (should be empty or minimal after fresh load) -------
+tools/call browser_get_mutations {}
+
+# ------- T14: Performance metrics -------
+tools/call browser_get_performance_metrics {}
+
+# ------- T16: Detect leaks and anomalies (CLS, detached nodes, brightness) -------
+tools/call browser_detect_leaks_and_anomalies {}
+
+# ------- T15: React fiber sniffer (mock __reactFiber$ on test_page.html) -------
+tools/call browser_sniff_framework_state {}
+
+# ------- T6: Click non-occluded button (target-btn) -------
+# We need to use the backendNodeId from the accessibility tree.
+# The target-btn should be a non-occluded element. We will use a placeholder
+# node ID here; in real usage the agent would pick it from the USAG tree.
+# Let's click the first button - target-btn. Typical backend node IDs start
+# from low numbers. We'll try a reasonable ID.
+# NOTE: We don't know the exact backendNodeId at script-write time, so we
+# use a likely one. If it fails, that's still useful diagnostic data.
+tools/call browser_click {"backendNodeId": 8}
+
+# ------- T7: Type into the input field -------
+tools/call browser_type {"backendNodeId": 10, "text": "Hello MCP"}
+
+# ------- T8: Hover over an element -------
+tools/call browser_hover {"backendNodeId": 8}
+
+# ------- T8b: Hover over occluded button (should fail with occlusion error) -------
+# The occluded-btn is behind #overlay in test_page.html
+tools/call browser_hover {"backendNodeId": 11}
+
+# ------- T9b: Mutations after interactions -------
+tools/call browser_get_mutations {}
+
+# ------- T12: Get event listeners on target-btn -------
+tools/call browser_get_listeners {"backendNodeId": 8}
+
+# ------- T13: Toggle paint flash ON -------
+tools/call browser_toggle_paint_flash {"enabled": true}
+
+# ------- T13b: Toggle paint flash OFF -------
+tools/call browser_toggle_paint_flash {"enabled": false}
+
+# ------- T17: Throttle network conditions -------
+tools/call browser_throttle_network {"latencyMs": 200, "downloadKbps": 1000, "uploadKbps": 500}
+
+# ------- T17b: Remove throttling -------
+tools/call browser_throttle_network {"latencyMs": 0, "downloadKbps": 0, "uploadKbps": 0}
+
+# ------- T18: Enable request interception (fail action) -------
+tools/call browser_intercept_request {"pattern": "*mock-api*", "action": "fail"}
+
+# ------- T19: Disable request interception -------
+tools/call browser_disable_interception {}
+
+# ------- T18b: Enable interception with delay action -------
+tools/call browser_intercept_request {"pattern": "*slow-api*", "action": "delay", "delayMs": 2000}
+
+# ------- T19b: Disable again -------
+tools/call browser_disable_interception {}
+
+# ------- T10: Dump DVR buffer -------
+tools/call browser_dump_dvr {"outputPath": "/Users/stompinggrounds/Development/best-browser-mcp/dist/audit-dvr-dump"}
+
+# ------- T20: Responsive layout testing -------
+tools/call browser_test_responsive {"url": "file:///Users/stompinggrounds/Development/best-browser-mcp/test_page.html"}
+
+# ------- T14b: Performance metrics (second read, for comparison) -------
+tools/call browser_get_performance_metrics {}
+
+# ------- T16b: Leaks/anomalies after all interactions -------
+tools/call browser_detect_leaks_and_anomalies {}
+
+# ------- Edge case: Invalid backendNodeId for click -------
+tools/call browser_click {"backendNodeId": 999999}
+
+# ------- Edge case: Get listeners on invalid node -------
+tools/call browser_get_listeners {"backendNodeId": 999999}
+
+# ------- T3: Close browser -------
+tools/call browser_close {}
+
+# ------- T3b: Double-close guard -------
+tools/call browser_close {}
+
+# ------- Edge case: Call tool after browser closed -------
+tools/call browser_get_accessibility_tree {}
+
+# Done
