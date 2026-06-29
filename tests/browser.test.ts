@@ -302,24 +302,30 @@ describe('BrowserManager', () => {
   describe('React Fiber Sniffer', () => {
     it('should detect mock React components from test page', async () => {
       await bm.navigate(TEST_PAGE_URL);
-      const state = (await bm.sniffFrameworkState()) as { component: string }[];
-      expect(Array.isArray(state)).toBe(true);
-      expect(state.length).toBeGreaterThan(0);
+      const result = (await bm.sniffFrameworkState()) as {
+        current: { react: { component: string }[]; redux: unknown; zustand: unknown[] };
+        diff: unknown;
+        hasPrevious: boolean;
+      };
+      expect(result.current).toBeDefined();
+      expect(Array.isArray(result.current.react)).toBe(true);
+      expect(result.current.react.length).toBeGreaterThan(0);
     });
 
     it('should find SubmitButtonComponent', async () => {
-      const state = (await bm.sniffFrameworkState()) as {
-        component: string;
-        state: Record<string, unknown>;
-      }[];
-      const btn = state.find((c) => c.component === 'SubmitButtonComponent');
+      const result = (await bm.sniffFrameworkState()) as {
+        current: { react: { component: string; state: Record<string, unknown> }[] };
+      };
+      const btn = result.current.react.find((c) => c.component === 'SubmitButtonComponent');
       expect(btn).toBeDefined();
       expect(btn!.state).toEqual({ label: 'Clickable Button', active: true });
     });
 
     it('should find MainDashboardContainer parent', async () => {
-      const state = (await bm.sniffFrameworkState()) as { component: string }[];
-      const container = state.find((c) => c.component === 'MainDashboardContainer');
+      const result = (await bm.sniffFrameworkState()) as {
+        current: { react: { component: string }[] };
+      };
+      const container = result.current.react.find((c) => c.component === 'MainDashboardContainer');
       expect(container).toBeDefined();
     });
   });

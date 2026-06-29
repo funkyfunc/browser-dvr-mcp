@@ -187,9 +187,11 @@ export class BrowserManager {
   private cdpSession: CDPSession | null = null;
   private worker: Worker | null = null;
   private screencastActive = false;
+  private isHeadless = true;
   private fetchInterceptHandler: ((...args: unknown[]) => void) | null = null;
   private activeRecording: RecordingState | null = null;
   private recordingFrameHandler: ((...args: unknown[]) => void) | null = null;
+  private dateTimeMockScript: string | null = null;
 
   private consoleLogs: { level: string; text: string; timestamp: number }[] = [];
   private networkLogs: { method: string; url: string; status?: number; type: string; timestamp: number }[] = [];
@@ -197,6 +199,7 @@ export class BrowserManager {
   private session: Session | null = null;
   private sessionsDir: string;
   private requestIdCounter = 0;
+  private previousFrameworkState: unknown = null;
 
   constructor() {
     this.sessionsDir = join(__dirname, '..', 'sessions');
@@ -234,12 +237,13 @@ export class BrowserManager {
 
     const executablePath = this.findChromeExecutable();
     const headless = options.headless !== false; // default headless to true
+    this.isHeadless = headless;
 
     const launchArgs: string[] = ['--no-sandbox', '--disable-setuid-sandbox'];
     
     this.browser = await puppeteer.launch({
       executablePath,
-      headless: headless ? 'shell' : false,
+      headless: headless ? true : false,
       args: launchArgs,
       userDataDir: options.userDataDir,
       defaultViewport: { width: 1280, height: 720 },
@@ -602,7 +606,8 @@ export class BrowserManager {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("wasn't found") || msg.includes('not supported')) {
-        return `Paint flashing is unavailable in headless shell mode. Launch with headless:false for visual debugging. (Requested: ${enabled})`;
+        const hint = this.isHeadless ? ' The browser is running headless — try launching with headless:false.' : '';
+        return `Paint flashing is not supported by this browser build.${hint} (Requested: ${enabled})`;
       }
       throw err;
     }
@@ -619,8 +624,9 @@ export class BrowserManager {
     if (!this.page) throw new Error('No active page session.');
 
     const script = `(() => {
-      const results = [];
+      const result = { react: [], redux: null, zustand: [] };
 
+      // --- React Fiber Tree ---
       function findReactData(element) {
         let key = null;
         for (const k in element) {
@@ -647,7 +653,7 @@ export class BrowserManager {
                   : null);
 
           if (name) {
-            results.push({
+            result.react.push({
               component: name,
               state: current.memoizedState,
               props: current.memoizedProps,
@@ -662,10 +668,112 @@ export class BrowserManager {
         findReactData(allElements[i]);
       }
 
-      return results;
+      // --- Redux DevTools ---
+      try {
+        const devToolsExt = window.__REDUX_DEVTOOLS_EXTENSION__;
+        if (devToolsExt) {
+          // Try to get the store from the global Redux DevTools
+          const stores = devToolsExt.getStores ? devToolsExt.getStores() : null;
+          if (stores) {
+            result.redux = {};
+            for (const [name, store] of Object.entries(stores)) {
+              result.redux[name] = store.getState ? store.getState() : null;
+            }
+          }
+        }
+        // Also check common global patterns
+        if (!result.redux && window.__store__ && window.__store__.getState) {
+          result.redux = window.__store__.getState();
+        }
+        if (!result.redux && window.store && window.store.getState) {
+          result.redux = window.store.getState();
+        }
+      } catch (e) {}
+
+      // --- Zustand Stores ---
+      try {
+        // Zustand stores are often attached to React fiber state as hooks
+        // Check for common global store patterns
+        for (const key of Object.keys(window)) {
+          if (key.startsWith('__zustand') || key.includes('ZustandStore')) {
+            try {
+              const store = window[key];
+              if (store && typeof store.getState === 'function') {
+                result.zustand.push({ name: key, state: store.getState() });
+              }
+            } catch (e) {}
+          }
+        }
+        // Also look for stores exposed via useStore pattern in React fiber hooks
+        if (result.zustand.length === 0 && result.react.length > 0) {
+          const seen = new Set();
+          for (const comp of result.react) {
+            if (comp.state && typeof comp.state === 'object' && comp.state !== null) {
+              // Walk the memoizedState linked list looking for Zustand store refs
+              let hookState = comp.state;
+              while (hookState) {
+                const q = hookState.queue;
+                if (q && q.lastRenderedReducer && q.lastRenderedState && typeof q.lastRenderedState === 'object') {
+                  const stateStr = JSON.stringify(q.lastRenderedState).substring(0, 100);
+                  if (!seen.has(stateStr)) {
+                    seen.add(stateStr);
+                    result.zustand.push({ name: comp.component + '_hook', state: q.lastRenderedState });
+                  }
+                }
+                hookState = hookState.next;
+              }
+            }
+          }
+        }
+      } catch (e) {}
+
+      return result;
     })()`;
 
-    return await this.page.evaluate(script);
+    const currentState = await this.page.evaluate(script);
+
+    // Compute diff against previous snapshot
+    let diff: unknown = null;
+    if (this.previousFrameworkState) {
+      try {
+        diff = this.computeStateDiff(this.previousFrameworkState, currentState);
+      } catch {
+        diff = { error: 'Failed to compute diff' };
+      }
+    }
+
+    this.previousFrameworkState = currentState;
+
+    return { current: currentState, diff, hasPrevious: diff !== null };
+  }
+
+  /**
+   * Compute a shallow diff between two framework state snapshots.
+   * Returns an object describing added, removed, and changed keys.
+   */
+  private computeStateDiff(prev: any, curr: any): unknown {
+    if (typeof prev !== 'object' || typeof curr !== 'object' || prev === null || curr === null) {
+      return prev === curr ? null : { previous: prev, current: curr };
+    }
+
+    const diff: Record<string, unknown> = {};
+    const allKeys = new Set([...Object.keys(prev), ...Object.keys(curr)]);
+
+    for (const key of allKeys) {
+      if (!(key in prev)) {
+        diff[key] = { type: 'added', value: curr[key] };
+      } else if (!(key in curr)) {
+        diff[key] = { type: 'removed', value: prev[key] };
+      } else {
+        const prevStr = JSON.stringify(prev[key]);
+        const currStr = JSON.stringify(curr[key]);
+        if (prevStr !== currStr) {
+          diff[key] = { type: 'changed', previous: prev[key], current: curr[key] };
+        }
+      }
+    }
+
+    return Object.keys(diff).length > 0 ? diff : null;
   }
 
   public async detectLeaksAndAnomalies(): Promise<{
@@ -753,6 +861,21 @@ export class BrowserManager {
     });
 
     return `Network throttled: latency=${latencyMs}ms, download=${downloadKbps}Kbps, upload=${uploadKbps}Kbps`;
+  }
+
+  public async setOfflineMode(offline: boolean): Promise<string> {
+    if (!this.cdpSession) throw new Error('No active CDP session.');
+
+    await this.cdpSession.send('Network.emulateNetworkConditions', {
+      offline,
+      latency: 0,
+      downloadThroughput: -1,
+      uploadThroughput: -1,
+    });
+
+    return offline
+      ? 'Network set to offline mode. All requests will fail.'
+      : 'Network restored to online mode.';
   }
 
   public async enableRequestInterception(
@@ -1120,10 +1243,12 @@ export class BrowserManager {
     return 'Invalid storage operation or missing parameters.';
   }
 
-  public async assertElement(backendNodeId?: number, selector?: string) {
+  public async assertElement(backendNodeId?: number, selector?: string, iframeSelector?: string) {
     if (!this.page || !this.cdpSession) throw new Error('No active page session.');
     
     let objectId: string | undefined;
+    let resolvedBackendNodeId: number | undefined = backendNodeId;
+
     if (backendNodeId) {
       try {
         const { object } = await this.cdpSession.send('DOM.resolveNode', { backendNodeId });
@@ -1132,8 +1257,32 @@ export class BrowserManager {
         throw new Error(`Failed to resolve node by backendNodeId ${backendNodeId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     } else if (selector) {
-      const handle = await this.page.$(selector);
+      // Determine the context to query (top-level or iframe)
+      let context: Page | import('puppeteer-core').Frame = this.page;
+      if (iframeSelector) {
+        const iframeHandle = await this.page.$(iframeSelector);
+        if (!iframeHandle) throw new Error(`Iframe not found for selector: ${iframeSelector}`);
+        const frame = await iframeHandle.contentFrame();
+        if (!frame) throw new Error(`Could not access content frame for iframe: ${iframeSelector}`);
+        context = frame;
+      }
+
+      const handle = await context.$(selector);
       if (!handle) throw new Error(`Element not found for selector: ${selector}`);
+
+      // Resolve the backendNodeId from the element handle via CDP
+      try {
+        const cdp = this.cdpSession;
+        // Get the remote object ID from the element handle
+        const remoteObject = handle.remoteObject?.() || (handle as any)._remoteObject;
+        if (remoteObject?.objectId) {
+          const { node } = await cdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
+          resolvedBackendNodeId = node.backendNodeId;
+        }
+      } catch {
+        // If we can't resolve the backendNodeId, continue without it
+      }
+
       const result = await handle.evaluate((el: any) => {
         const rect = el.getBoundingClientRect();
         return {
@@ -1145,7 +1294,7 @@ export class BrowserManager {
           boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
         };
       });
-      return result;
+      return { ...result, backendNodeId: resolvedBackendNodeId };
     } else {
       throw new Error('Must provide either backendNodeId or selector');
     }
@@ -1166,10 +1315,269 @@ export class BrowserManager {
         }`,
         returnByValue: true
       });
-      return result.result.value;
+      return { ...result.result.value, backendNodeId: resolvedBackendNodeId };
     }
     
     throw new Error('Element not found');
+  }
+
+  // ─── Query Selector ─────────────────────────────────────────────────────
+
+  public async querySelector(selector: string, iframeSelector?: string): Promise<{
+    matches: { tag: string; text: string; backendNodeId: number; boundingBox: { x: number; y: number; width: number; height: number } }[];
+  }> {
+    if (!this.page || !this.cdpSession) throw new Error('No active page session.');
+
+    // Determine the context to query (top-level or iframe)
+    let context: Page | import('puppeteer-core').Frame = this.page;
+    if (iframeSelector) {
+      const iframeHandle = await this.page.$(iframeSelector);
+      if (!iframeHandle) throw new Error(`Iframe not found for selector: ${iframeSelector}`);
+      const frame = await iframeHandle.contentFrame();
+      if (!frame) throw new Error(`Could not access content frame for iframe: ${iframeSelector}`);
+      context = frame;
+    }
+
+    // Support XPath if selector starts with 'xpath/'
+    const isXPath = selector.startsWith('xpath/');
+    let handles: ElementHandle<Element>[];
+
+    if (isXPath) {
+      const xpath = selector.slice('xpath/'.length);
+      handles = await context.$$(`::-p-xpath(${xpath})`) as ElementHandle<Element>[];
+    } else {
+      handles = await context.$$(selector) as ElementHandle<Element>[];
+    }
+
+    const cdp = this.cdpSession;
+    const matches: { tag: string; text: string; backendNodeId: number; boundingBox: { x: number; y: number; width: number; height: number } }[] = [];
+
+    for (const handle of handles) {
+      try {
+        // Get element info via evaluate
+        const info = await handle.evaluate((el: Element) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            tag: el.tagName.toLowerCase(),
+            text: ((el as HTMLElement).innerText || el.textContent || '').substring(0, 200).trim(),
+            boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          };
+        });
+
+        // Resolve backendNodeId via CDP
+        let backendNodeId = 0;
+        try {
+          const remoteObject = handle.remoteObject?.() || (handle as any)._remoteObject;
+          if (remoteObject?.objectId) {
+            const { node } = await cdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
+            backendNodeId = node.backendNodeId;
+          }
+        } catch {
+          // Skip if we can't resolve
+        }
+
+        matches.push({ ...info, backendNodeId });
+      } catch {
+        // Element may have been removed from DOM between query and evaluation
+      } finally {
+        await handle.dispose().catch(() => {});
+      }
+    }
+
+    return { matches };
+  }
+
+  // ─── Evaluate ───────────────────────────────────────────────────────────
+
+  public async evaluate(expression: string): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    if (!this.page) throw new Error('No active page session.');
+
+    try {
+      const result = await Promise.race([
+        this.page.evaluate(expression),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Evaluation timed out after 5 seconds')), 5000)),
+      ]);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // ─── Simulate Tab Flow ──────────────────────────────────────────────────
+
+  public async simulateTabFlow(maxSteps: number = 20): Promise<{
+    focusFlow: { step: number; tag: string; role: string; name: string; id: string; backendNodeId: number }[];
+    focusTraps: string[];
+    totalSteps: number;
+  }> {
+    if (!this.page || !this.cdpSession) throw new Error('No active page session.');
+
+    const focusFlow: { step: number; tag: string; role: string; name: string; id: string; backendNodeId: number }[] = [];
+    const focusTraps: string[] = [];
+    const seenElements = new Map<string, number>(); // fingerprint -> first step index
+
+    // Click on the body first to reset focus
+    await this.page.evaluate(() => {
+      (document.activeElement as HTMLElement)?.blur?.();
+      document.body.focus();
+    });
+
+    for (let step = 1; step <= maxSteps; step++) {
+      await this.page.keyboard.press('Tab');
+
+      // Small delay to let focus settle
+      await new Promise(r => setTimeout(r, 50));
+
+      const elementInfo = await this.page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body) {
+          return { tag: 'body', role: '', name: '', id: '', fingerprint: 'body' };
+        }
+        return {
+          tag: el.tagName.toLowerCase(),
+          role: el.getAttribute('role') || el.tagName.toLowerCase(),
+          name: el.getAttribute('aria-label') || el.getAttribute('title') || (el as HTMLElement).innerText?.substring(0, 50)?.trim() || '',
+          id: el.id || '',
+          fingerprint: `${el.tagName}#${el.id}.${el.className}`,
+        };
+      });
+
+      // Resolve backendNodeId for the focused element
+      let backendNodeId = 0;
+      try {
+        const handle = await this.page.evaluateHandle(() => document.activeElement);
+        const remoteObject = handle.remoteObject?.() || (handle as any)._remoteObject;
+        if (remoteObject?.objectId) {
+          const { node } = await this.cdpSession!.send('DOM.describeNode', { objectId: remoteObject.objectId });
+          backendNodeId = node.backendNodeId;
+        }
+        await handle.dispose().catch(() => {});
+      } catch {
+        // Continue without backendNodeId
+      }
+
+      focusFlow.push({
+        step,
+        tag: elementInfo.tag,
+        role: elementInfo.role,
+        name: elementInfo.name,
+        id: elementInfo.id,
+        backendNodeId,
+      });
+
+      // Check for focus trap (element seen before)
+      if (seenElements.has(elementInfo.fingerprint)) {
+        const firstStep = seenElements.get(elementInfo.fingerprint)!;
+        // Only flag as a trap if we cycled back within fewer steps than maxSteps
+        // (cycling through the whole page is normal)
+        if (step - firstStep < maxSteps - 1) {
+          focusTraps.push(
+            `Possible focus trap: <${elementInfo.tag}${elementInfo.id ? '#' + elementInfo.id : ''}> at step ${step} was already focused at step ${firstStep} (cycle of ${step - firstStep} elements)`
+          );
+        }
+        break; // Stop on first cycle detection
+      }
+
+      seenElements.set(elementInfo.fingerprint, step);
+
+      // If we hit body, focus has left all interactive elements
+      if (elementInfo.tag === 'body') {
+        break;
+      }
+    }
+
+    return {
+      focusFlow,
+      focusTraps,
+      totalSteps: focusFlow.length,
+    };
+  }
+
+  // ─── Mock Date and Time ─────────────────────────────────────────────────
+
+  public async mockDateTime(options: {
+    mode: 'freeze' | 'travel' | 'reset';
+    isoDate?: string;
+    deltaMs?: number;
+  }): Promise<string> {
+    if (!this.page) throw new Error('No active page session.');
+
+    if (options.mode === 'reset') {
+      // Remove the injected script and restore native Date/performance
+      const wasMocked = this.dateTimeMockScript !== null;
+      this.dateTimeMockScript = null;
+      if (!wasMocked) {
+        return 'No date/time mock is active. Nothing to reset.';
+      }
+      await this.page.evaluate(`(() => {
+        if (window.__mcp_original_Date) {
+          window.Date = window.__mcp_original_Date;
+          delete window.__mcp_original_Date;
+        }
+        if (window.__mcp_original_performance_now) {
+          performance.now = window.__mcp_original_performance_now;
+          delete window.__mcp_original_performance_now;
+        }
+      })()`);
+      return 'Date/time mocking reset. Native Date and performance.now restored.';
+    }
+
+    let mockScript: string;
+
+    if (options.mode === 'freeze') {
+      const freezeTime = options.isoDate ? `new window.__mcp_original_Date('${options.isoDate}').getTime()` : 'window.__mcp_original_Date.now()';
+      mockScript = `(() => {
+        if (!window.__mcp_original_Date) window.__mcp_original_Date = window.Date;
+        if (!window.__mcp_original_performance_now) window.__mcp_original_performance_now = performance.now.bind(performance);
+        const frozenTime = ${freezeTime};
+        const frozenPerfTime = window.__mcp_original_performance_now();
+        const OriginalDate = window.__mcp_original_Date;
+
+        function MockDate(...args) {
+          if (args.length === 0) return new OriginalDate(frozenTime);
+          return new OriginalDate(...args);
+        }
+        MockDate.prototype = OriginalDate.prototype;
+        MockDate.now = () => frozenTime;
+        MockDate.parse = OriginalDate.parse;
+        MockDate.UTC = OriginalDate.UTC;
+        window.Date = MockDate;
+        performance.now = () => frozenPerfTime;
+      })()`;
+    } else {
+      // travel mode
+      const delta = options.deltaMs || 0;
+      mockScript = `(() => {
+        if (!window.__mcp_original_Date) window.__mcp_original_Date = window.Date;
+        if (!window.__mcp_original_performance_now) window.__mcp_original_performance_now = performance.now.bind(performance);
+        const delta = ${delta};
+        const OriginalDate = window.__mcp_original_Date;
+
+        function MockDate(...args) {
+          if (args.length === 0) return new OriginalDate(OriginalDate.now() + delta);
+          return new OriginalDate(...args);
+        }
+        MockDate.prototype = OriginalDate.prototype;
+        MockDate.now = () => OriginalDate.now() + delta;
+        MockDate.parse = OriginalDate.parse;
+        MockDate.UTC = OriginalDate.UTC;
+        window.Date = MockDate;
+        const origPerfNow = window.__mcp_original_performance_now;
+        performance.now = () => origPerfNow() + delta;
+      })()`;
+    }
+
+    // Store and inject the script
+    this.dateTimeMockScript = mockScript;
+    await this.page.evaluate(mockScript);
+    // Also inject on future navigations
+    await this.page.evaluateOnNewDocument(mockScript);
+
+    if (options.mode === 'freeze') {
+      return `Time frozen at ${options.isoDate || 'current time'}. All Date.now() and performance.now() calls will return the frozen value.`;
+    } else {
+      return `Time shifted by ${options.deltaMs || 0}ms. All Date.now() and performance.now() calls are offset by the delta.`;
+    }
   }
 
   // ─── Session Management ─────────────────────────────────────────────────
@@ -1409,7 +1817,12 @@ export class BrowserManager {
       browser_press_key: (a) => this.pressKey(a.key as string),
       browser_scroll: (a) => this.scroll(a.direction as any, a.amount as number),
       browser_manage_storage: (a) => this.manageStorage(a.action as any, a.type as any, a.key as string, a.value as string, a.domain as string),
-      browser_assert_element: (a) => this.assertElement(a.backendNodeId as number, a.selector as string),
+      browser_assert_element: (a) => this.assertElement(a.backendNodeId as number, a.selector as string, a.iframeSelector as string),
+      browser_query_selector: (a) => this.querySelector(a.selector as string, a.iframeSelector as string),
+      browser_evaluate: (a) => this.evaluate(a.expression as string),
+      browser_simulate_tab_flow: (a) => this.simulateTabFlow(a.maxSteps as number),
+      browser_set_offline: (a) => this.setOfflineMode(a.offline as boolean),
+      browser_mock_date_and_time: (a) => this.mockDateTime(a as { mode: 'freeze' | 'travel' | 'reset'; isoDate?: string; deltaMs?: number }),
       browser_session_summary: () => Promise.resolve(this.getSessionSummary()),
       browser_session_drilldown: (a) => Promise.resolve(this.sessionDrillDown(a.category as string, a.filter as string)),
     };

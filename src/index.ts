@@ -212,7 +212,7 @@ server.registerTool(
 // 15. Sniff Framework State
 server.registerTool(
   'browser_sniff_framework_state',
-  { description: 'Sniff React component fiber trees and retrieve active state trees from the page DOM.' },
+  { description: 'Sniff React component fiber trees, Redux stores (__REDUX_DEVTOOLS_EXTENSION__ / window.store), and Zustand stores. Returns the current state snapshot and a diff against the previous call, enabling before/after state comparison across interactions.' },
   async () => {
     const result = await browserManager.sniffFrameworkState();
     const text = JSON.stringify(result, null, 2);
@@ -476,17 +476,102 @@ server.registerTool(
 server.registerTool(
   'browser_assert_element',
   { 
-    description: 'Assert and retrieve the state (visible, disabled, text, checked) of an element without pulling the full tree.',
+    description: 'Assert and retrieve the state (visible, disabled, text, checked, backendNodeId) of an element without pulling the full tree. Supports querying inside iframes.',
     inputSchema: { 
       backendNodeId: z.number().optional().describe('The backend node ID of the element'),
-      selector: z.string().optional().describe('CSS selector (used if backendNodeId is omitted)')
+      selector: z.string().optional().describe('CSS selector (used if backendNodeId is omitted)'),
+      iframeSelector: z.string().optional().describe('CSS selector for an iframe to scope the query into (only used with selector)')
     }
   },
-  async ({ backendNodeId, selector }) => {
-    const result = await browserManager.assertElement(backendNodeId, selector);
+  async ({ backendNodeId, selector, iframeSelector }) => {
+    const result = await browserManager.assertElement(backendNodeId, selector, iframeSelector);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }
 );
+
+// ─── Query Selector Tool ──────────────────────────────────────────────────
+
+server.registerTool(
+  'browser_query_selector',
+  {
+    description: 'Query the DOM using a CSS selector or XPath (prefix with "xpath/") and return all matching elements with their tag names, text content, bounding boxes, and backendNodeIds. Supports querying inside iframes.',
+    inputSchema: {
+      selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query'),
+      iframeSelector: z.string().optional().describe('CSS selector for an iframe to scope the query into'),
+    },
+  },
+  async ({ selector, iframeSelector }) => {
+    const result = await browserManager.querySelector(selector, iframeSelector);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// ─── Evaluate Tool ────────────────────────────────────────────────────────
+
+server.registerTool(
+  'browser_evaluate',
+  {
+    description: 'Execute a JavaScript expression in the active page context and return the result. Useful for checking global variables, triggering custom lookups, or running quick queries. Times out after 5 seconds.',
+    inputSchema: {
+      expression: z.string().describe('JavaScript expression to evaluate in the page context'),
+    },
+  },
+  async ({ expression }) => {
+    const result = await browserManager.evaluate(expression);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// ─── Mock Date and Time Tool ──────────────────────────────────────────────
+
+server.registerTool(
+  'browser_mock_date_and_time',
+  {
+    description: 'Mock, freeze, or shift browser time for deterministic testing of time-dependent UI. Overrides Date, Date.now(), and performance.now(). Persists across page navigations.',
+    inputSchema: {
+      mode: z.enum(['freeze', 'travel', 'reset']).describe('freeze: stop time at a specific moment. travel: offset all times by deltaMs. reset: restore native time.'),
+      isoDate: z.string().optional().describe('ISO 8601 date string to freeze time at (only for freeze mode, e.g. "2025-01-01T00:00:00Z")'),
+      deltaMs: z.number().optional().describe('Millisecond offset to shift time by (only for travel mode, e.g. 3600000 for +1 hour)'),
+    },
+  },
+  async ({ mode, isoDate, deltaMs }) => {
+    const result = await browserManager.mockDateTime({ mode, isoDate, deltaMs });
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
+// ─── Simulate Tab Flow Tool ───────────────────────────────────────────────
+
+server.registerTool(
+  'browser_simulate_tab_flow',
+  {
+    description: 'Simulate pressing Tab through the page to audit keyboard accessibility. Reports the focus traversal order with element details and backendNodeIds, and flags potential focus traps where keyboard users would get stuck.',
+    inputSchema: {
+      maxSteps: z.number().optional().describe('Maximum number of Tab presses to simulate (default: 20)'),
+    },
+  },
+  async ({ maxSteps }) => {
+    const result = await browserManager.simulateTabFlow(maxSteps);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// ─── Set Offline Mode Tool ─────────────────────────────────────────────────
+
+server.registerTool(
+  'browser_set_offline',
+  {
+    description: 'Toggle the browser network between online and offline mode. Useful for testing PWA offline behavior, Service Worker fallbacks, and error handling for network failures.',
+    inputSchema: {
+      offline: z.boolean().describe('Set to true to go offline, false to restore online connectivity'),
+    },
+  },
+  async ({ offline }) => {
+    const result = await browserManager.setOfflineMode(offline);
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
 // ─── Session Management Tools ─────────────────────────────────────────────
 
 server.registerTool(
