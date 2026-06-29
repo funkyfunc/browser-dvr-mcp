@@ -7,6 +7,7 @@ import { Worker } from 'worker_threads';
 import { execFileSync } from 'child_process';
 import { createRequire } from 'module';
 import { formatAccessibilityTree, AXNode } from './usag.js';
+import { Session } from './session.js';
 
 const require = createRequire(import.meta.url);
 const ffmpegPath: string | null = require('ffmpeg-static');
@@ -190,7 +191,15 @@ export class BrowserManager {
   private activeRecording: RecordingState | null = null;
   private recordingFrameHandler: ((...args: unknown[]) => void) | null = null;
 
+  private consoleLogs: { level: string; text: string; timestamp: number }[] = [];
+  private networkLogs: { method: string; url: string; status?: number; type: string; timestamp: number }[] = [];
+
+  private session: Session | null = null;
+  private sessionsDir: string;
+  private requestIdCounter = 0;
+
   constructor() {
+    this.sessionsDir = join(__dirname, '..', 'sessions');
     this.initWorker();
   }
 
@@ -237,9 +246,10 @@ export class BrowserManager {
     });
 
     this.page = await this.browser.newPage();
+    this.session = new Session('agent');
     await this.setupPageSession(this.page);
 
-    return `Browser launched successfully (headless: ${headless}).`;
+    return `Browser launched successfully (headless: ${headless}). Session: ${this.session.id}`;
   }
 
   public async close(): Promise<string> {
@@ -276,32 +286,47 @@ export class BrowserManager {
 
     // Hook telemetry listeners
     page.on('console', (msg) => {
-      this.worker?.postMessage({
-        type: 'console',
-        level: msg.type(),
-        text: msg.text(),
-        timestamp: Date.now(),
-      });
+      const log = { level: msg.type(), text: msg.text(), timestamp: Date.now() };
+      this.consoleLogs.push(log);
+      if (this.consoleLogs.length > 1000) this.consoleLogs.shift();
+      this.session?.addConsoleEvent(log.level, log.text);
+      this.worker?.postMessage({ type: 'console', ...log });
+    });
+
+    page.on('pageerror', (err: any) => {
+      const log = { level: 'error', text: `Uncaught exception: ${err instanceof Error ? err.message : String(err)}`, timestamp: Date.now() };
+      this.consoleLogs.push(log);
+      if (this.consoleLogs.length > 1000) this.consoleLogs.shift();
+      this.session?.addConsoleEvent(log.level, log.text);
+      this.worker?.postMessage({ type: 'console', ...log });
     });
 
     page.on('request', (req) => {
-      this.worker?.postMessage({
-        type: 'network',
-        method: req.method(),
-        url: req.url(),
-        status: undefined,
-        timestamp: Date.now(),
-      });
+      const reqId = `req-${++this.requestIdCounter}`;
+      (req as any).__mcpReqId = reqId;
+      const log = { method: req.method(), url: req.url(), status: undefined, eventType: 'request', timestamp: Date.now() };
+      this.networkLogs.push(log as any);
+      if (this.networkLogs.length > 1000) this.networkLogs.shift();
+      this.session?.addNetworkRequest(reqId, req.method(), req.url());
+      this.worker?.postMessage({ type: 'network', method: log.method, url: log.url, status: log.status, timestamp: log.timestamp });
     });
 
     page.on('response', (res) => {
-      this.worker?.postMessage({
-        type: 'network',
-        method: res.request().method(),
-        url: res.url(),
-        status: res.status(),
-        timestamp: Date.now(),
-      });
+      const reqId = (res.request() as any).__mcpReqId || `req-unknown`;
+      const log = { method: res.request().method(), url: res.url(), status: res.status(), eventType: 'response', timestamp: Date.now() };
+      this.networkLogs.push(log as any);
+      if (this.networkLogs.length > 1000) this.networkLogs.shift();
+      this.session?.addNetworkResponse(reqId, res.url(), res.request().method(), res.status());
+      this.worker?.postMessage({ type: 'network', method: log.method, url: log.url, status: log.status, timestamp: log.timestamp });
+    });
+
+    page.on('requestfailed', (req) => {
+      const reqId = (req as any).__mcpReqId || `req-unknown`;
+      const log = { method: req.method(), url: req.url(), status: undefined, eventType: 'failed', timestamp: Date.now() };
+      this.networkLogs.push(log as any);
+      if (this.networkLogs.length > 1000) this.networkLogs.shift();
+      this.session?.addNetworkFailure(reqId, req.url(), req.method(), req.failure()?.errorText);
+      this.worker?.postMessage({ type: 'network', method: log.method, url: log.url, status: log.status, timestamp: log.timestamp });
     });
 
     // Start screencast recording
@@ -343,6 +368,7 @@ export class BrowserManager {
     await this.page!.goto(url, { waitUntil: 'load' });
     // Re-inject mutation observer manually just in case
     await this.page!.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+    this.session?.addNavigation(url);
     return `Navigated to ${url}`;
   }
 
@@ -452,6 +478,7 @@ export class BrowserManager {
     if (!this.page) throw new Error('No active page session.');
     const coords = await this.validateSpatialGuard(backendNodeId);
     await this.page.mouse.click(coords.x, coords.y);
+    this.session?.addInteraction({ type: 'click', timestamp: Date.now(), target: `backendNodeId:${backendNodeId}`, x: coords.x, y: coords.y });
     return `Successfully clicked element ID ${backendNodeId} at coordinates (${coords.x}, ${coords.y})`;
   }
 
@@ -462,6 +489,7 @@ export class BrowserManager {
     // Double click to focus / clear
     await this.page.mouse.click(coords.x, coords.y, { count: 2 });
     await this.page.keyboard.type(text);
+    this.session?.addInteraction({ type: 'type', timestamp: Date.now(), target: `backendNodeId:${backendNodeId}`, text });
     return `Successfully typed text into element ID ${backendNodeId}`;
   }
 
@@ -469,6 +497,7 @@ export class BrowserManager {
     if (!this.page) throw new Error('No active page session.');
     const coords = await this.validateSpatialGuard(backendNodeId);
     await this.page.mouse.move(coords.x, coords.y);
+    this.session?.addInteraction({ type: 'hover', timestamp: Date.now(), target: `backendNodeId:${backendNodeId}`, x: coords.x, y: coords.y });
     return `Successfully hovered over element ID ${backendNodeId} at coordinates (${coords.x}, ${coords.y})`;
   }
 
@@ -1025,6 +1054,328 @@ export class BrowserManager {
     };
   }
 
+  // ─── Agent Observation & State Tools ────────────────────────────────────────
+
+  public getConsoleLogs(clear: boolean = false) {
+    const logs = [...this.consoleLogs];
+    if (clear) this.consoleLogs = [];
+    return logs;
+  }
+
+  public getNetworkActivity(clear: boolean = false) {
+    const logs = [...this.networkLogs];
+    if (clear) this.networkLogs = [];
+    return logs;
+  }
+
+  public async pressKey(key: string) {
+    if (!this.page) throw new Error('No active page session.');
+    await this.page.keyboard.press(key as any);
+    this.session?.addInteraction({ type: 'keypress', timestamp: Date.now(), key });
+    return `Pressed key: ${key}`;
+  }
+
+  public async scroll(direction: 'up' | 'down' | 'bottom' | 'top', amount?: number) {
+    if (!this.page) throw new Error('No active page session.');
+    await this.page.evaluate((dir, amt) => {
+      const scrollAmt = amt || window.innerHeight;
+      if (dir === 'down') window.scrollBy(0, scrollAmt);
+      else if (dir === 'up') window.scrollBy(0, -scrollAmt);
+      else if (dir === 'bottom') window.scrollTo(0, document.body.scrollHeight);
+      else if (dir === 'top') window.scrollTo(0, 0);
+    }, direction, amount);
+    this.session?.addInteraction({ type: 'scroll', timestamp: Date.now(), details: `${direction}${amount ? ` ${amount}px` : ''}` });
+    return `Scrolled ${direction}`;
+  }
+
+  public async manageStorage(
+    action: 'get' | 'set' | 'clear',
+    type: 'localStorage' | 'sessionStorage' | 'cookies',
+    key?: string,
+    value?: string,
+    domain?: string
+  ) {
+    if (!this.page) throw new Error('No active page session.');
+    if (type === 'cookies') {
+      if (action === 'get') return await this.page.cookies();
+      if (action === 'clear') {
+        const cookies = await this.page.cookies();
+        await this.page.deleteCookie(...cookies);
+        return 'Cookies cleared.';
+      }
+      if (action === 'set' && key && value) {
+        await this.page.setCookie({ name: key, value, domain: domain || 'localhost' });
+        return `Cookie ${key} set.`;
+      }
+    } else {
+      const storageObj = type === 'localStorage' ? 'localStorage' : 'sessionStorage';
+      return await this.page.evaluate((act, store, k, v) => {
+        const s = window[store as 'localStorage' | 'sessionStorage'];
+        if (act === 'clear') { s.clear(); return `${store} cleared.`; }
+        if (act === 'get') return Object.fromEntries(Object.entries(s));
+        if (act === 'set' && k && v) { s.setItem(k, v); return `${store} ${k} set.`; }
+        return 'Invalid storage operation.';
+      }, action, storageObj, key, value);
+    }
+    return 'Invalid storage operation or missing parameters.';
+  }
+
+  public async assertElement(backendNodeId?: number, selector?: string) {
+    if (!this.page || !this.cdpSession) throw new Error('No active page session.');
+    
+    let objectId: string | undefined;
+    if (backendNodeId) {
+      try {
+        const { object } = await this.cdpSession.send('DOM.resolveNode', { backendNodeId });
+        objectId = object.objectId;
+      } catch (err) {
+        throw new Error(`Failed to resolve node by backendNodeId ${backendNodeId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else if (selector) {
+      const handle = await this.page.$(selector);
+      if (!handle) throw new Error(`Element not found for selector: ${selector}`);
+      const result = await handle.evaluate((el: any) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          visible: rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden',
+          disabled: !!el.disabled,
+          checked: !!el.checked,
+          text: el.innerText || el.textContent,
+          innerHTML: el.innerHTML,
+          boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+        };
+      });
+      return result;
+    } else {
+      throw new Error('Must provide either backendNodeId or selector');
+    }
+
+    if (objectId) {
+      const result = await this.cdpSession.send('Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: `function() {
+          const rect = this.getBoundingClientRect();
+          return {
+            visible: rect.width > 0 && rect.height > 0 && window.getComputedStyle(this).visibility !== 'hidden',
+            disabled: !!this.disabled,
+            checked: !!this.checked,
+            text: this.innerText || this.textContent,
+            innerHTML: this.innerHTML,
+            boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+          };
+        }`,
+        returnByValue: true
+      });
+      return result.result.value;
+    }
+    
+    throw new Error('Element not found');
+  }
+
+  // ─── Session Management ─────────────────────────────────────────────────
+
+  public getSessionSummary() {
+    if (!this.session) throw new Error('No active session. Launch a browser first.');
+    return this.session.getSummary();
+  }
+
+  public sessionDrillDown(category: string, filter?: string) {
+    if (!this.session) throw new Error('No active session. Launch a browser first.');
+    return this.session.drillDown(category, filter);
+  }
+
+  // ─── Human Recording Mode ──────────────────────────────────────────────
+
+  private static readonly HUMAN_INTERACTION_TRACKER = `
+(function() {
+  if (window.__mcp_human_tracker_initialized) return;
+  window.__mcp_human_tracker_initialized = true;
+  window.__mcp_human_interactions = [];
+
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    const tagName = target.tagName ? target.tagName.toLowerCase() : 'unknown';
+    const id = target.id ? '#' + target.id : '';
+    const cls = target.className && typeof target.className === 'string'
+      ? '.' + target.className.trim().split(/\\s+/).slice(0, 2).join('.')
+      : '';
+    const text = (target.innerText || target.textContent || '').substring(0, 50).trim();
+    window.__mcp_human_interactions.push({
+      type: 'click',
+      x: e.clientX, y: e.clientY,
+      target: tagName + id + cls,
+      text: text,
+      timestamp: Date.now()
+    });
+  }, true);
+
+  document.addEventListener('input', (e) => {
+    const target = e.target;
+    const tagName = target.tagName ? target.tagName.toLowerCase() : 'unknown';
+    const id = target.id ? '#' + target.id : '';
+    window.__mcp_human_interactions.push({
+      type: 'input',
+      target: tagName + id,
+      value: target.value ? target.value.substring(0, 100) : '',
+      timestamp: Date.now()
+    });
+  }, true);
+
+  document.addEventListener('keydown', (e) => {
+    if (['Enter', 'Escape', 'Tab', 'Backspace', 'Delete'].includes(e.key) || e.ctrlKey || e.metaKey) {
+      window.__mcp_human_interactions.push({
+        type: 'keypress',
+        key: (e.ctrlKey ? 'Ctrl+' : '') + (e.metaKey ? 'Cmd+' : '') + e.key,
+        timestamp: Date.now()
+      });
+    }
+  }, true);
+})();
+`;
+
+  private humanInteractionPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  public async startHumanSession(url?: string): Promise<{ sessionId: string; message: string }> {
+    // Close existing browser if running
+    if (this.browser) {
+      await this.close();
+    }
+
+    const executablePath = this.findChromeExecutable();
+
+    this.browser = await puppeteer.launch({
+      executablePath,
+      headless: false,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      defaultViewport: null,
+    });
+
+    const pages = await this.browser.pages();
+    this.page = pages[0] || (await this.browser.newPage());
+    this.session = new Session('human');
+    await this.setupPageSession(this.page);
+
+    // Inject human interaction tracker
+    await this.page.evaluateOnNewDocument(BrowserManager.HUMAN_INTERACTION_TRACKER);
+    await this.page.evaluate(BrowserManager.HUMAN_INTERACTION_TRACKER).catch(() => {});
+
+    // Navigate if URL provided
+    if (url) {
+      await this.page.goto(url, { waitUntil: 'load' });
+      await this.page.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+      await this.page.evaluate(BrowserManager.HUMAN_INTERACTION_TRACKER).catch(() => {});
+      this.session.addNavigation(url);
+    }
+
+    // Start polling for human interactions from the page
+    this.humanInteractionPollTimer = setInterval(async () => {
+      if (!this.page) return;
+      try {
+        const interactions = await this.page.evaluate(() => {
+          const win = window as any;
+          const result = win.__mcp_human_interactions || [];
+          win.__mcp_human_interactions = [];
+          return result;
+        });
+        for (const interaction of interactions) {
+          this.session?.addInteraction(interaction);
+        }
+        // Also grab mutations for the session
+        const mutations = await this.page.evaluate(() => {
+          const win = window as any;
+          const result = win.__mcp_mutations || [];
+          win.__mcp_mutations = [];
+          return result;
+        });
+        for (const mutation of mutations) {
+          this.session?.addMutation(mutation.type, mutation.targetId, mutation);
+        }
+      } catch {
+        // Page might have navigated, that's fine
+      }
+    }, 500);
+
+    // Re-inject tracker on navigation
+    this.page.on('framenavigated', async () => {
+      try {
+        await this.page?.evaluate(BrowserManager.HUMAN_INTERACTION_TRACKER).catch(() => {});
+        const url = this.page?.url();
+        if (url && url !== 'about:blank') {
+          this.session?.addNavigation(url);
+        }
+      } catch { /* ignore */ }
+    });
+
+    // Auto-stop if the user closes the browser window
+    this.browser.on('disconnected', () => {
+      if (this.session && this.session.mode === 'human' && this.humanInteractionPollTimer) {
+        this.stopHumanSession().catch(() => {});
+      }
+    });
+
+    return {
+      sessionId: this.session.id,
+      message: `Human recording session started. Browser is open${url ? ` at ${url}` : ''}. Interact with it, then either close the browser window or call browser_stop_human_session when done.`,
+    };
+  }
+
+  public async stopHumanSession(): Promise<{ sessionId: string; savedTo: string; summary: unknown }> {
+    if (!this.session || this.session.mode !== 'human') {
+      throw new Error('No active human session to stop.');
+    }
+
+    // Use the poll timer as a guard against re-entrancy (e.g. called explicitly + browser disconnected)
+    if (!this.humanInteractionPollTimer) {
+       const summary = this.session.getSummary();
+       return { sessionId: summary.sessionId, savedTo: 'Already saved', summary };
+    }
+
+    // Stop polling
+    clearInterval(this.humanInteractionPollTimer);
+    this.humanInteractionPollTimer = null;
+
+    // Do one final poll before stopping
+    if (this.page) {
+      try {
+        const interactions = await this.page.evaluate(() => {
+          const win = window as any;
+          const result = win.__mcp_human_interactions || [];
+          win.__mcp_human_interactions = [];
+          return result;
+        });
+        for (const interaction of interactions) {
+          this.session?.addInteraction(interaction);
+        }
+        const mutations = await this.page.evaluate(() => {
+          const win = window as any;
+          const result = win.__mcp_mutations || [];
+          win.__mcp_mutations = [];
+          return result;
+        });
+        for (const mutation of mutations) {
+          this.session?.addMutation(mutation.type, mutation.targetId, mutation);
+        }
+      } catch { /* ignore */ }
+    }
+
+    const summary = this.session.getSummary();
+    const savedTo = this.session.saveToDisk(this.sessionsDir);
+
+    // Close the browser
+    await this.close();
+
+    return { sessionId: summary.sessionId, savedTo, summary };
+  }
+
+  public loadSession(filePath: string) {
+    this.session = Session.load(filePath);
+    return this.session.getSummary();
+  }
+
+  public listSessions() {
+    return Session.listSessions(this.sessionsDir);
+  }
+
   // ─── Batch Actions ──────────────────────────────────────────────────────
 
   public async executeBatch(
@@ -1053,6 +1404,14 @@ export class BrowserManager {
       browser_screenshot: (a) => this.screenshot(a as Parameters<typeof this.screenshot>[0]),
       browser_toggle_paint_flash: (a) => this.togglePaintFlash(a.enabled as boolean),
       browser_dump_dvr: (a) => this.dumpDvr(a.outputPath as string),
+      browser_get_console_logs: (a) => Promise.resolve(this.getConsoleLogs(a.clear as boolean)),
+      browser_get_network_activity: (a) => Promise.resolve(this.getNetworkActivity(a.clear as boolean)),
+      browser_press_key: (a) => this.pressKey(a.key as string),
+      browser_scroll: (a) => this.scroll(a.direction as any, a.amount as number),
+      browser_manage_storage: (a) => this.manageStorage(a.action as any, a.type as any, a.key as string, a.value as string, a.domain as string),
+      browser_assert_element: (a) => this.assertElement(a.backendNodeId as number, a.selector as string),
+      browser_session_summary: () => Promise.resolve(this.getSessionSummary()),
+      browser_session_drilldown: (a) => Promise.resolve(this.sessionDrillDown(a.category as string, a.filter as string)),
     };
 
     for (const action of actions) {
