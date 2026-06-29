@@ -26,14 +26,15 @@ server.registerTool(
 server.registerTool(
   'browser_launch',
   {
-    description: 'Launch the browser. headless defaults to true. userDataDir is optional.',
+    description: 'Launch the browser. headless defaults to true. userDataDir is optional. If url is provided, navigates directly.',
     inputSchema: {
       headless: z.boolean().optional().describe('Launch browser in headless mode (default: true)'),
       userDataDir: z.string().optional().describe('Optional custom user profile directory path'),
+      url: z.string().url().optional().describe('Optional URL to navigate to immediately after launch'),
     },
   },
-  async ({ headless, userDataDir }) => {
-    const result = await browserManager.launch({ headless, userDataDir });
+  async ({ headless, userDataDir, url }) => {
+    const result = await browserManager.launch({ headless, userDataDir, url });
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -67,9 +68,14 @@ server.registerTool(
 // 5. Get Accessibility Tree (USAG)
 server.registerTool(
   'browser_get_accessibility_tree',
-  { description: 'Get the USAG accessibility tree of the active page in LLM-optimized Markdown.' },
-  async () => {
-    const result = await browserManager.getAccessibilityTree();
+  { 
+    description: 'Get the USAG accessibility tree of the active page in LLM-optimized Markdown.',
+    inputSchema: {
+      iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to fetch the tree for the iframe content instead of the main document')
+    }
+  },
+  async ({ iframeSelector }) => {
+    const result = await browserManager.getAccessibilityTree(iframeSelector);
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -78,15 +84,17 @@ server.registerTool(
 server.registerTool(
   'browser_click',
   {
-    description: 'Perform pre-execution spatial validation and click the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or coordinate).',
+    description: 'Perform pre-execution spatial validation and click the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or x/y coordinates).',
     inputSchema: {
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to click'),
       mcpId: z.string().optional().describe('The mcpId of the element to click (returned by query_selector)'),
-      coordinate: z.array(z.number()).optional().describe('Direct [x, y] coordinates to click, bypassing spatial validation'),
+      x: z.number().optional().describe('Direct X coordinate to click, bypassing spatial validation'),
+      y: z.number().optional().describe('Direct Y coordinate to click, bypassing spatial validation'),
     },
   },
-  async ({ backendNodeId, mcpId, coordinate }) => {
-    const result = await browserManager.click({ backendNodeId, mcpId, coordinate: coordinate as [number, number] | undefined });
+  async ({ backendNodeId, mcpId, x, y }) => {
+    const coordinate = (x !== undefined && y !== undefined) ? [x, y] as [number, number] : undefined;
+    const result = await browserManager.click({ backendNodeId, mcpId, coordinate });
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -95,16 +103,18 @@ server.registerTool(
 server.registerTool(
   'browser_type',
   {
-    description: 'Perform pre-execution spatial validation and type text into the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or coordinate).',
+    description: 'Perform pre-execution spatial validation and type text into the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or x/y coordinates).',
     inputSchema: {
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to type into'),
       mcpId: z.string().optional().describe('The mcpId of the element to type into (returned by query_selector)'),
-      coordinate: z.array(z.number()).optional().describe('Direct [x, y] coordinates to type into, bypassing spatial validation'),
+      x: z.number().optional().describe('Direct X coordinate to type into, bypassing spatial validation'),
+      y: z.number().optional().describe('Direct Y coordinate to type into, bypassing spatial validation'),
       text: z.string().describe('The text string to type into the element'),
     },
   },
-  async ({ backendNodeId, mcpId, coordinate, text }) => {
-    const result = await browserManager.type({ backendNodeId, mcpId, coordinate: coordinate as [number, number] | undefined, text });
+  async ({ backendNodeId, mcpId, x, y, text }) => {
+    const coordinate = (x !== undefined && y !== undefined) ? [x, y] as [number, number] : undefined;
+    const result = await browserManager.type({ backendNodeId, mcpId, coordinate, text });
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -113,15 +123,17 @@ server.registerTool(
 server.registerTool(
   'browser_hover',
   {
-    description: 'Perform pre-execution spatial validation and hover over the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or coordinate).',
+    description: 'Perform pre-execution spatial validation and hover over the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or x/y coordinates).',
     inputSchema: {
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to hover over'),
       mcpId: z.string().optional().describe('The mcpId of the element to hover over (returned by query_selector)'),
-      coordinate: z.array(z.number()).optional().describe('Direct [x, y] coordinates to hover over, bypassing spatial validation'),
+      x: z.number().optional().describe('Direct X coordinate to hover over, bypassing spatial validation'),
+      y: z.number().optional().describe('Direct Y coordinate to hover over, bypassing spatial validation'),
     },
   },
-  async ({ backendNodeId, mcpId, coordinate }) => {
-    const result = await browserManager.hover({ backendNodeId, mcpId, coordinate: coordinate as [number, number] | undefined });
+  async ({ backendNodeId, mcpId, x, y }) => {
+    const coordinate = (x !== undefined && y !== undefined) ? [x, y] as [number, number] : undefined;
+    const result = await browserManager.hover({ backendNodeId, mcpId, coordinate });
     return { content: [{ type: 'text', text: result }] };
   }
 );

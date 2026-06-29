@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Iframe Child</title>
+  <style>
+    body { background-color: #f9f9f9; padding: 15px; font-family: sans-serif; }
+    button { padding: 10px; background-color: #007bff; color: white; border: none; cursor: pointer; }
+    button:hover { background-color: #0056b3; }
+  </style>
+</head>
+<body>
+  <h2>Inside Iframe</h2>
+  <button id="child-btn">Click Me (Child)</button>
+  <div id="child-status">Waiting for click...</div>
+  
+  <input type="text" id="child-input" placeholder="Type here in child..." style="margin-top: 15px; padding: 5px;" />
+
+  <script>
+    document.getElementById('child-btn').addEventListener('click', () => {
+      document.getElementById('child-status').innerText = 'Child button clicked!';
+    });
+  </script>
+</body>
+</html>

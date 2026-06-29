@@ -41,6 +41,7 @@ const MUTATION_INJECT_SCRIPT = `
 (function() {
   if (window.__mcp_observer_initialized) return;
   window.__mcp_observer_initialized = true;
+  window.__mcp_frame_prefix = Math.random().toString(36).substring(2, 6);
   window.__mcp_id_seq = 1;
   window.__mcp_mutations = [];
   window.__mcp_cls = 0;
@@ -63,10 +64,10 @@ const MUTATION_INJECT_SCRIPT = `
     if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
     let id = node.getAttribute('data-mcp-id');
     if (!id) {
-      id = String(window.__mcp_id_seq++);
+      id = window.__mcp_frame_prefix + '-' + window.__mcp_id_seq++;
       node.setAttribute('data-mcp-id', id);
     }
-    return parseInt(id, 10);
+    return id;
   }
 
   function attachInputListener(el) {
@@ -231,7 +232,7 @@ export class BrowserManager {
     throw new Error('Google Chrome or Chromium executable not found on Mac. Please install Chrome.');
   }
 
-  public async launch(options: { headless?: boolean; userDataDir?: string } = {}): Promise<string> {
+  public async launch(options: { headless?: boolean; userDataDir?: string; url?: string } = {}): Promise<string> {
     if (this.browser) return 'Browser is already running.';
 
     const headless = options.headless ?? true;
@@ -248,6 +249,11 @@ export class BrowserManager {
     this.page = await this.browser.newPage();
     this.session = new Session('agent');
     await this.setupPageSession(this.page);
+
+    if (options.url) {
+      await this.navigate(options.url);
+      return `Browser launched successfully (headless: ${headless}). Session: ${this.session.id}. Navigated to ${options.url}.`;
+    }
 
     return `Browser launched successfully (headless: ${headless}). Session: ${this.session.id}`;
   }
@@ -376,11 +382,21 @@ export class BrowserManager {
     return `Navigated to ${url}`;
   }
 
-  public async getAccessibilityTree(): Promise<string> {
-    if (!this.cdpSession) {
+  public async getAccessibilityTree(iframeSelector?: string): Promise<string> {
+    if (!this.cdpSession || !this.page) {
       throw new Error('No active CDP session. Launch browser first.');
     }
-    const result = await this.cdpSession.send('Accessibility.getFullAXTree');
+    
+    let frameId: string | undefined = undefined;
+    if (iframeSelector) {
+      const iframeHandle = await this.page.$(iframeSelector);
+      if (!iframeHandle) throw new Error(`Iframe not found for selector: ${iframeSelector}`);
+      const frame = await iframeHandle.contentFrame();
+      if (!frame) throw new Error(`Could not access content frame for iframe: ${iframeSelector}`);
+      frameId = (frame as any)._id || (frame as any).id;
+    }
+
+    const result = await this.cdpSession.send('Accessibility.getFullAXTree', frameId ? { frameId } : undefined);
     return formatAccessibilityTree(result.nodes as AXNode[]);
   }
 
@@ -417,6 +433,28 @@ export class BrowserManager {
     }
     if (!elementHandle) throw new Error(`Could not find element.`);
     try {
+      let offsetX = 0;
+      let offsetY = 0;
+      let currentFrame = (elementHandle as any).executionContext?.()?.frame?.();
+      if (!currentFrame && (elementHandle as any).frame) {
+        currentFrame = (elementHandle as any).frame;
+      }
+      
+      while (currentFrame && currentFrame.parentFrame()) {
+        const frameElement = await currentFrame.frameElement();
+        if (frameElement) {
+          const rect = await frameElement.evaluate((el: Element) => {
+            const r = el.getBoundingClientRect();
+            return { x: r.x, y: r.y };
+          }).catch(() => null);
+          if (rect) {
+            offsetX += rect.x;
+            offsetY += rect.y;
+          }
+        }
+        currentFrame = currentFrame.parentFrame();
+      }
+
       const checkResult = (await elementHandle.evaluate((el: Element) => {
         if (!(el instanceof Element)) return { error: 'Node is not a DOM Element' };
         const rect = el.getBoundingClientRect();
@@ -434,7 +472,11 @@ export class BrowserManager {
       })) as any;
       if (checkResult.error) throw new Error(checkResult.error);
       if (checkResult.occluded) throw new Error(`Pre-Execution Spatial Validation Failed: Element is occluded by '<${checkResult.occluder}>' at coordinates (${checkResult.coordinates?.x}, ${checkResult.coordinates?.y}).`);
-      return checkResult.coordinates;
+      
+      return { 
+        x: checkResult.coordinates.x + offsetX, 
+        y: checkResult.coordinates.y + offsetY 
+      };
     } finally {
       await elementHandle.dispose().catch(() => {});
     }
@@ -1321,7 +1363,7 @@ export class BrowserManager {
           const rect = el.getBoundingClientRect();
           let mcpId = el.getAttribute('data-mcp-id');
           if (!mcpId && (window as any).__mcp_id_seq) {
-            mcpId = String((window as any).__mcp_id_seq++);
+            mcpId = ((window as any).__mcp_frame_prefix || '') + '-' + (window as any).__mcp_id_seq++;
             el.setAttribute('data-mcp-id', mcpId);
           }
           return {
