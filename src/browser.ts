@@ -440,6 +440,28 @@ export class BrowserManager {
     }
   }
 
+  private async getHitFeedback(x: number, y: number): Promise<string> {
+    if (!this.page) return '';
+    try {
+      const hitInfo = await this.page.evaluate((posX, posY) => {
+        const el = document.elementFromPoint(posX, posY);
+        if (!el) return null;
+        return {
+          tag: el.tagName.toLowerCase(),
+          id: el.id,
+          text: (el as HTMLElement).innerText?.substring(0, 50).trim() || ''
+        };
+      }, x, y);
+      
+      if (hitInfo) {
+        return ` (Hit node: <${hitInfo.tag}${hitInfo.id ? '#'+hitInfo.id : ''}> "${hitInfo.text}")`;
+      }
+    } catch {
+      // Ignore
+    }
+    return '';
+  }
+
   public async click(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number] }): Promise<string> {
     const options = typeof target === 'number' ? { backendNodeId: target } : target;
     if (!this.page) throw new Error('No active page session.');
@@ -451,7 +473,8 @@ export class BrowserManager {
       x = coords.x; y = coords.y;
     }
     await this.page.mouse.click(x, y);
-    return `Successfully clicked element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})`;
+    const hitFeedback = await this.getHitFeedback(x, y);
+    return `Successfully clicked element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}`;
   }
 
   public async type(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; text: string }, fallbackText?: string): Promise<string> {
@@ -467,7 +490,8 @@ export class BrowserManager {
     await this.page.mouse.click(x, y);
     await this.page.mouse.click(x, y, { count: 2 });
     await this.page.keyboard.type(options.text);
-    return `Successfully typed text.`;
+    const hitFeedback = await this.getHitFeedback(x, y);
+    return `Successfully typed text into element at coordinates (${x}, ${y})${hitFeedback}`;
   }
 
   public async hover(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number] }): Promise<string> {
@@ -481,7 +505,8 @@ export class BrowserManager {
       x = coords.x; y = coords.y;
     }
     await this.page.mouse.move(x, y);
-    return `Successfully hovered at (${x}, ${y})`;
+    const hitFeedback = await this.getHitFeedback(x, y);
+    return `Successfully hovered element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}`;
   }
 
   public async dumpDvr(outputPath: string): Promise<{ success: boolean; frameCount: number; logCount: number; outputPath: string }> {
@@ -1262,9 +1287,17 @@ export class BrowserManager {
     if (!this.page || !this.cdpSession) throw new Error('No active page session.');
 
     let context: Page | import('puppeteer-core').Frame = this.page;
+    let iframeOffset = { x: 0, y: 0 };
     if (iframeSelector) {
       const iframeHandle = await this.page.$(iframeSelector);
       if (!iframeHandle) throw new Error(`Iframe not found for selector: ${iframeSelector}`);
+      
+      const rect = await iframeHandle.evaluate((el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y };
+      }).catch(() => null);
+      if (rect) iframeOffset = rect;
+
       const frame = await iframeHandle.contentFrame();
       if (!frame) throw new Error(`Could not access content frame for iframe: ${iframeSelector}`);
       context = frame;
@@ -1284,7 +1317,7 @@ export class BrowserManager {
 
     for (const handle of handles) {
       try {
-        const info = await handle.evaluate((el: Element) => {
+        const info = await handle.evaluate((el: Element, offset: { x: number; y: number }) => {
           const rect = el.getBoundingClientRect();
           let mcpId = el.getAttribute('data-mcp-id');
           if (!mcpId && (window as any).__mcp_id_seq) {
@@ -1294,10 +1327,15 @@ export class BrowserManager {
           return {
             tag: el.tagName.toLowerCase(),
             text: ((el as HTMLElement).innerText || el.textContent || '').substring(0, 200).trim(),
-            boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            boundingBox: { 
+              x: rect.x + offset.x, 
+              y: rect.y + offset.y, 
+              width: rect.width, 
+              height: rect.height 
+            },
             mcpId: mcpId || ''
           };
-        });
+        }, iframeOffset);
 
         if (info.mcpId) {
           matches.push(info);
