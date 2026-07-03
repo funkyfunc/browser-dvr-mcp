@@ -532,7 +532,7 @@ server.registerTool(
   {
     description: 'Query the DOM using a CSS selector or XPath (prefix with "xpath/") and return all matching elements with their tag names, text content, bounding boxes, and backendNodeIds. Supports querying inside iframes.',
     inputSchema: {
-      selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query'),
+      selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query. Use ">>" to cross iframe boundaries (e.g. "iframe >> .btn").'),
       iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to scope the query into'),
       iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe to scope the query into'),
       pierceAllFrames: z.boolean().optional().describe('Defaults to true. NOTE: Standard CSS selectors cannot natively cross iframe boundaries (e.g. "iframe h1" will fail). To query inside an iframe, use iframeMcpId or iframeSelector.'),
@@ -553,7 +553,7 @@ server.registerTool(
   {
     description: 'Wait for an element to appear in the DOM matching the given selector. Supports querying inside iframes. Returns the matched elements once found.',
     inputSchema: {
-      selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to wait for'),
+      selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to wait for. Use ">>" to cross iframe boundaries (e.g. "iframe >> .btn").'),
       iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to scope the query into'),
       iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe to scope the query into'),
       visibleOnly: z.boolean().optional().describe('Only match if the element is visible'),

@@ -522,8 +522,17 @@ export class BrowserManager {
             if (!(el instanceof Element)) return { error: 'Node is not a DOM Element' };
             const rect = el.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) return { error: 'Element is invisible' };
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
+            
+            // Intersect with viewport to prevent out-of-bounds clicks on overflowing iframe children
+            const left = Math.max(0, rect.left);
+            const top = Math.max(0, rect.top);
+            const right = Math.min(window.innerWidth, rect.right);
+            const bottom = Math.min(window.innerHeight, rect.bottom);
+            
+            if (left >= right || top >= bottom) return { error: 'Element is outside the viewport/iframe bounds' };
+            
+            const x = left + (right - left) / 2;
+            const y = top + (bottom - top) / 2;
             const topEl = document.elementFromPoint(x, y);
             if (!topEl) return { error: `No element found at center coordinates` };
             const contains = el.contains(topEl) || topEl.contains(el);
@@ -1487,6 +1496,12 @@ export class BrowserManager {
   }> {
     if (!this.page || !this.cdpSession) throw new Error('No active page session.');
 
+    if (selector.includes('>>')) {
+      const parts = selector.split('>>').map(s => s.trim());
+      iframeSelector = iframeSelector || parts[0];
+      selector = parts.slice(1).join(' >> ');
+    }
+
     const isXPath = selector.startsWith('xpath/');
     const searchXPath = isXPath ? `::-p-xpath(${selector.slice('xpath/'.length)})` : '';
     
@@ -1545,6 +1560,13 @@ export class BrowserManager {
               return null;
             }
 
+            const left = Math.max(0, rect.left);
+            const top = Math.max(0, rect.top);
+            const right = Math.min(window.innerWidth, rect.right);
+            const bottom = Math.min(window.innerHeight, rect.bottom);
+            const intersectedWidth = Math.max(0, right - left);
+            const intersectedHeight = Math.max(0, bottom - top);
+
             const htmlEl = el as HTMLElement;
             const disabled = (htmlEl as any).disabled === true || el.getAttribute('aria-disabled') === 'true';
 
@@ -1557,10 +1579,10 @@ export class BrowserManager {
               tag: el.tagName.toLowerCase(),
               text: ((el as HTMLElement).innerText || el.textContent || '').substring(0, 200).trim(),
               boundingBox: { 
-                x: rect.x + offset.x, 
-                y: rect.y + offset.y, 
-                width: rect.width, 
-                height: rect.height 
+                x: left + offset.x, 
+                y: top + offset.y, 
+                width: intersectedWidth, 
+                height: intersectedHeight 
               },
               mcpId: mcpId || '',
               isVisible: visible,
