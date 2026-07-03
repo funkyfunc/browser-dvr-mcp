@@ -84,17 +84,22 @@ server.registerTool(
 server.registerTool(
   'browser_click',
   {
-    description: 'Perform pre-execution spatial validation and click the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or x/y coordinates).',
+    description: 'Click an element on the page. Provides feedback on whether the click resulted in DOM mutations.',
     inputSchema: {
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to click'),
       mcpId: z.string().optional().describe('The mcpId of the element to click (returned by query_selector)'),
-      x: z.number().optional().describe('Direct X coordinate to click, bypassing spatial validation'),
-      y: z.number().optional().describe('Direct Y coordinate to click, bypassing spatial validation'),
+      coordinate: z.tuple([z.number(), z.number()]).optional().describe('X, Y coordinates to click. Will bypass spatial occlusion checks.'),
+      timeoutMs: z.number().optional().describe('Time in ms to wait for the element to appear and become visible/unoccluded before clicking (default: 0)'),
     },
   },
-  async ({ backendNodeId, mcpId, x, y }) => {
-    const coordinate = (x !== undefined && y !== undefined) ? [x, y] as [number, number] : undefined;
-    const result = await browserManager.click({ backendNodeId, mcpId, coordinate });
+  async ({ backendNodeId, mcpId, coordinate, timeoutMs }) => {
+    let target: any = undefined;
+    if (coordinate) target = { coordinate, timeoutMs };
+    else if (backendNodeId) target = { backendNodeId, timeoutMs };
+    else if (mcpId) target = { mcpId, timeoutMs };
+    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate');
+
+    const result = await browserManager.click(target);
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -103,18 +108,23 @@ server.registerTool(
 server.registerTool(
   'browser_type',
   {
-    description: 'Perform pre-execution spatial validation and type text into the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or x/y coordinates).',
+    description: 'Type text into an element on the page. Automatically clicks the element first to focus it.',
     inputSchema: {
-      backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to type into'),
-      mcpId: z.string().optional().describe('The mcpId of the element to type into (returned by query_selector)'),
-      x: z.number().optional().describe('Direct X coordinate to type into, bypassing spatial validation'),
-      y: z.number().optional().describe('Direct Y coordinate to type into, bypassing spatial validation'),
-      text: z.string().describe('The text string to type into the element'),
+      backendNodeId: z.number().optional().describe('The backend DOM node ID of the element'),
+      mcpId: z.string().optional().describe('The mcpId of the element'),
+      coordinate: z.tuple([z.number(), z.number()]).optional().describe('X, Y coordinates of the element'),
+      text: z.string().describe('The text to type'),
+      timeoutMs: z.number().optional().describe('Time in ms to wait for the element to appear and become visible/unoccluded before typing (default: 0)'),
     },
   },
-  async ({ backendNodeId, mcpId, x, y, text }) => {
-    const coordinate = (x !== undefined && y !== undefined) ? [x, y] as [number, number] : undefined;
-    const result = await browserManager.type({ backendNodeId, mcpId, coordinate, text });
+  async ({ backendNodeId, mcpId, coordinate, text, timeoutMs }) => {
+    let target: any = { text, timeoutMs };
+    if (coordinate) target.coordinate = coordinate;
+    else if (backendNodeId) target.backendNodeId = backendNodeId;
+    else if (mcpId) target.mcpId = mcpId;
+    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate');
+
+    const result = await browserManager.type(target);
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -519,7 +529,7 @@ server.registerTool(
       selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query'),
       iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to scope the query into'),
       iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe to scope the query into'),
-      pierceAllFrames: z.boolean().optional().describe('Search across the main document and all iframes natively. Defaults to true if no iframe limits are set.'),
+      pierceAllFrames: z.boolean().optional().describe('Defaults to true. NOTE: Standard CSS selectors cannot natively cross iframe boundaries (e.g. "iframe h1" will fail). To query inside an iframe, use iframeMcpId or iframeSelector.'),
       visibleOnly: z.boolean().optional().describe('Strip out invisible or non-rendered elements (e.g., meta, script, hidden divs)'),
     },
   },

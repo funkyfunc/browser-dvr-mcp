@@ -466,55 +466,75 @@ export class BrowserManager {
     return { x: offsetX, y: offsetY };
   }
 
-  private async validateSpatialGuard(target: number | { backendNodeId?: number; mcpId?: string }): Promise<{ x: number; y: number }> {
+  private async validateSpatialGuard(target: number | { backendNodeId?: number; mcpId?: string; timeoutMs?: number }): Promise<{ x: number; y: number }> {
     const options = typeof target === 'number' ? { backendNodeId: target } : target;
+    const timeoutMs = options.timeoutMs || 0;
+    const startTime = Date.now();
+    
     if (!this.page) throw new Error('No active page session.');
-    let elementHandle;
-    try {
-      if (options.backendNodeId !== undefined) {
-        const frame = this.page.mainFrame() as unknown as {
-          mainRealm(): { adoptBackendNode(id: number): Promise<ElementHandle<Element>> };
-        };
-        elementHandle = await frame.mainRealm().adoptBackendNode(options.backendNodeId);
-      } else if (options.mcpId !== undefined) {
-        for (const frame of this.page.frames()) {
-          elementHandle = await frame.$(`[data-mcp-id="${options.mcpId}"]`);
-          if (elementHandle) break;
+    
+    while (true) {
+      let elementHandle;
+      try {
+        if (options.backendNodeId !== undefined) {
+          const frame = this.page.mainFrame() as unknown as {
+            mainRealm(): { adoptBackendNode(id: number): Promise<ElementHandle<Element>> };
+          };
+          elementHandle = await frame.mainRealm().adoptBackendNode(options.backendNodeId).catch(() => null);
+        } else if (options.mcpId !== undefined) {
+          for (const frame of this.page.frames()) {
+            elementHandle = await frame.$(`[data-mcp-id="${options.mcpId}"]`);
+            if (elementHandle) break;
+          }
+        } else {
+          throw new Error('Must provide either backendNodeId or mcpId');
         }
-      } else {
-        throw new Error('Must provide either backendNodeId or mcpId');
+      } catch (err) {
+        throw new Error(`Failed to resolve backend node ID ${options.backendNodeId}: ${err}`);
       }
-    } catch (err) {
-      throw new Error(`Failed to resolve backend node ID ${options.backendNodeId}: ${err}`);
-    }
-    if (!elementHandle) throw new Error(`Could not find element with backendNodeId ${options.backendNodeId} or mcpId ${options.mcpId}. The element may have been removed from the DOM or the ID is incorrect.`);
-    try {
-      const offset = await this.getFrameOffset(elementHandle);
-
-      const checkResult = (await elementHandle.evaluate((el: Element) => {
-        if (!(el instanceof Element)) return { error: 'Node is not a DOM Element' };
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return { error: 'Element is invisible' };
-        const x = rect.left + rect.width / 2;
-        const y = rect.top + rect.height / 2;
-        const topEl = document.elementFromPoint(x, y);
-        if (!topEl) return { error: `No element found at center coordinates` };
-        const contains = el.contains(topEl) || topEl.contains(el);
-        if (!contains) {
-          const occluderInfo = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className ? '.' + topEl.className.trim().split(/\\s+/).join('.') : ''}`;
-          return { occluded: true, occluder: occluderInfo, coordinates: { x, y } };
-        }
-        return { occluded: false, coordinates: { x, y } };
-      })) as any;
-      if (checkResult.error) throw new Error(checkResult.error);
-      if (checkResult.occluded) throw new Error(`Pre-Execution Spatial Validation Failed: Element is occluded by '<${checkResult.occluder}>' at coordinates (${checkResult.coordinates?.x}, ${checkResult.coordinates?.y}).`);
       
-      return { 
-        x: checkResult.coordinates.x + offset.x, 
-        y: checkResult.coordinates.y + offset.y 
-      };
-    } finally {
-      await elementHandle.dispose().catch(() => {});
+      let errorMsg = '';
+      if (!elementHandle) {
+        errorMsg = `Could not find element with backendNodeId ${options.backendNodeId} or mcpId ${options.mcpId}. The element may have been removed from the DOM or the ID is incorrect.`;
+      } else {
+        try {
+          const offset = await this.getFrameOffset(elementHandle);
+          const checkResult = (await elementHandle.evaluate((el: Element) => {
+            if (!(el instanceof Element)) return { error: 'Node is not a DOM Element' };
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return { error: 'Element is invisible' };
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const topEl = document.elementFromPoint(x, y);
+            if (!topEl) return { error: `No element found at center coordinates` };
+            const contains = el.contains(topEl) || topEl.contains(el);
+            if (!contains) {
+              const occluderInfo = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className ? '.' + topEl.className.trim().split(/\\s+/).join('.') : ''}`;
+              return { occluded: true, occluder: occluderInfo, coordinates: { x, y } };
+            }
+            return { occluded: false, coordinates: { x, y } };
+          })) as any;
+
+          if (checkResult.error) {
+            errorMsg = checkResult.error;
+          } else if (checkResult.occluded) {
+            errorMsg = `Pre-Execution Spatial Validation Failed: Element is occluded by '<${checkResult.occluder}>' at coordinates (${checkResult.coordinates?.x}, ${checkResult.coordinates?.y}).`;
+          } else {
+            return { 
+              x: checkResult.coordinates.x + offset.x, 
+              y: checkResult.coordinates.y + offset.y 
+            };
+          }
+        } finally {
+          await elementHandle.dispose().catch(() => {});
+        }
+      }
+
+      if (Date.now() - startTime >= timeoutMs) {
+        throw new Error(errorMsg);
+      }
+      
+      await new Promise(r => setTimeout(r, 200));
     }
   }
 
@@ -548,7 +568,7 @@ export class BrowserManager {
     }
   }
 
-  public async click(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number] }): Promise<string> {
+  public async click(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; timeoutMs?: number }): Promise<string> {
     const options = typeof target === 'number' ? { backendNodeId: target } : target;
     if (!this.page) throw new Error('No active page session.');
     let x: number, y: number;
@@ -560,11 +580,14 @@ export class BrowserManager {
       x = coords.x; y = coords.y;
     }
     await this.page.mouse.click(x, y);
+    await new Promise(r => setTimeout(r, 250)); // Allow time for potential DOM mutations
     const hitFeedback = await this.getHitFeedback(x, y);
-    return `Successfully clicked element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}`;
+    const mutations = await this.getMutations();
+    const mutationFeedback = mutations.length > 0 ? ` (Resulted in ${mutations.length} DOM mutations)` : '';
+    return `Successfully clicked element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}${mutationFeedback}`;
   }
 
-  public async type(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; text: string }, fallbackText?: string): Promise<string> {
+  public async type(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; text: string; timeoutMs?: number }, fallbackText?: string): Promise<string> {
     const options = typeof target === 'number' ? { backendNodeId: target, text: fallbackText! } : target;
     if (!this.page) throw new Error('No active page session.');
     let x: number, y: number;
@@ -578,11 +601,14 @@ export class BrowserManager {
     await this.page.mouse.click(x, y);
     await this.page.mouse.click(x, y, { count: 2 });
     await this.page.keyboard.type(options.text);
+    await new Promise(r => setTimeout(r, 250));
     const hitFeedback = await this.getHitFeedback(x, y);
-    return `Successfully typed text into element at coordinates (${x}, ${y})${hitFeedback}`;
+    const mutations = await this.getMutations();
+    const mutationFeedback = mutations.length > 0 ? ` (Resulted in ${mutations.length} DOM mutations)` : '';
+    return `Successfully typed text into element at coordinates (${x}, ${y})${hitFeedback}${mutationFeedback}`;
   }
 
-  public async hover(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number] }): Promise<string> {
+  public async hover(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; timeoutMs?: number }): Promise<string> {
     const options = typeof target === 'number' ? { backendNodeId: target } : target;
     if (!this.page) throw new Error('No active page session.');
     let x: number, y: number;
@@ -594,8 +620,11 @@ export class BrowserManager {
       x = coords.x; y = coords.y;
     }
     await this.page.mouse.move(x, y);
+    await new Promise(r => setTimeout(r, 250));
     const hitFeedback = await this.getHitFeedback(x, y);
-    return `Successfully hovered element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}`;
+    const mutations = await this.getMutations();
+    const mutationFeedback = mutations.length > 0 ? ` (Resulted in ${mutations.length} DOM mutations)` : '';
+    return `Successfully hovered element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}${mutationFeedback}`;
   }
 
   public async dumpDvr(outputPath: string): Promise<{ success: boolean; frameCount: number; logCount: number; outputPath: string }> {

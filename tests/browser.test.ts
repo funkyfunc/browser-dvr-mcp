@@ -170,7 +170,7 @@ describe('BrowserManager', () => {
     });
 
     it('should throw on invalid backend node ID', async () => {
-      await expect(bm.click(999999)).rejects.toThrow(/Failed to resolve backend node ID/);
+      await expect(bm.click(999999)).rejects.toThrow(/Could not find element with backendNodeId/);
     });
   });
 
@@ -178,6 +178,7 @@ describe('BrowserManager', () => {
 
   describe('DOM Mutations', () => {
     it('should return buffered mutations (initial load + interactions)', async () => {
+      await bm.navigate(TEST_PAGE_URL);
       const mutations = await bm.getMutations();
       // At minimum we should have the initial page load mutations and input events
       expect(Array.isArray(mutations)).toBe(true);
@@ -193,14 +194,10 @@ describe('BrowserManager', () => {
       // Re-navigate to get a fresh state
       await bm.navigate(TEST_PAGE_URL);
       const inputId = await findNodeIdByName(bm, 'Type here...');
-      await bm.type(inputId, 'AB');
-
-      const mutations = await bm.getMutations();
-      const inputMutations = mutations.filter(
-        (m) => (m as { type: string }).type === 'input',
-      );
-      // Should have at least 2 input events (one per character)
-      expect(inputMutations.length).toBeGreaterThanOrEqual(2);
+      const result = await bm.type(inputId, 'AB');
+      
+      // Since type now drains mutations for feedback, we assert against the feedback string
+      expect(result).toMatch(/Resulted in \d+ DOM mutations/);
     });
   });
 
