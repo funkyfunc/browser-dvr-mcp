@@ -31,7 +31,7 @@ interface TreeNode {
 /**
  * Parses a flat list of AXNodes into a tree structure and formats it as Markdown.
  */
-export function formatAccessibilityTree(nodes: AXNode[]): string {
+export function formatAccessibilityTree(nodes: AXNode[], semanticOnly: boolean = false): string {
   if (!nodes || nodes.length === 0) {
     return '*(Empty accessibility tree)*';
   }
@@ -98,8 +98,10 @@ export function formatAccessibilityTree(nodes: AXNode[]): string {
     
     // If it's a structural container but has interactive children, keep it
     if (!renderThis && children.length > 0) {
-      // Check if children render anything
-      renderThis = true; // We can still group them
+      // If semanticOnly is true, skip these noisy structural wrappers
+      if (!semanticOnly) {
+        renderThis = true; // We can still group them
+      }
     }
 
     const indent = '  '.repeat(depth);
@@ -143,7 +145,7 @@ export function formatAccessibilityTree(nodes: AXNode[]): string {
 
       // Backend DOM node ID mapping
       if (node.backendDOMNodeId !== undefined) {
-        props.push(`id: ${node.backendDOMNodeId}`);
+        props.push(`backendNodeId: ${node.backendDOMNodeId}`);
       }
 
       if (props.length > 0) {

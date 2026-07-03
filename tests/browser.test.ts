@@ -96,7 +96,7 @@ describe('BrowserManager', () => {
 
     it('should include backendDOMNodeId in output', async () => {
       const tree = await bm.getAccessibilityTree();
-      expect(tree).toMatch(/id: \d+/);
+      expect(tree).toMatch(/backendNodeId: \d+/);
     });
 
     it('should find the Clickable Button element', async () => {

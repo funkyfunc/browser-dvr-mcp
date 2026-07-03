@@ -69,10 +69,13 @@ server.registerTool(
 server.registerTool(
   'browser_get_accessibility_tree',
   { 
-    description: 'Get the USAG accessibility tree of the active page in LLM-optimized Markdown. Natively pierces and aggregates all iframes.',
+    description: 'Get the USAG accessibility tree of the active page in LLM-optimized Markdown. Natively pierces and aggregates all iframes. Each node includes a [backendNodeId: 123] tag which CAN and SHOULD be used directly in interactive tools like browser_click and browser_type as the backendNodeId argument.',
+    inputSchema: {
+      semanticOnly: z.boolean().optional().describe('Prune generic, non-interactive structural nodes (e.g., wrapper divs) from the tree to reduce density'),
+    },
   },
-  async () => {
-    const result = await browserManager.getAccessibilityTree();
+  async ({ semanticOnly }) => {
+    const result = await browserManager.getAccessibilityTree(semanticOnly);
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -496,11 +499,12 @@ server.registerTool(
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element'),
       mcpId: z.string().optional().describe('The mcpId of the element (returned by query_selector)'),
       selector: z.string().optional().describe('CSS or XPath selector of the element'),
-      iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe containing the element')
+      iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe containing the element'),
+      iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe containing the element')
     }
   },
-  async ({ backendNodeId, mcpId, selector, iframeSelector }) => {
-    const result = await browserManager.assertElement({ backendNodeId, mcpId, selector, iframeSelector });
+  async ({ backendNodeId, mcpId, selector, iframeSelector, iframeMcpId }) => {
+    const result = await browserManager.assertElement({ backendNodeId, mcpId, selector, iframeSelector, iframeMcpId });
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }
 );
@@ -514,11 +518,49 @@ server.registerTool(
     inputSchema: {
       selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query'),
       iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to scope the query into'),
+      iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe to scope the query into'),
       visibleOnly: z.boolean().optional().describe('Strip out invisible or non-rendered elements (e.g., meta, script, hidden divs)'),
     },
   },
-  async ({ selector, iframeSelector, visibleOnly }) => {
-    const result = await browserManager.querySelector(selector, iframeSelector, visibleOnly);
+  async ({ selector, iframeSelector, visibleOnly, iframeMcpId }) => {
+    const result = await browserManager.querySelector(selector, iframeSelector, visibleOnly, iframeMcpId);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// ─── Wait For Selector Tool ───────────────────────────────────────────────
+
+server.registerTool(
+  'browser_wait_for_selector',
+  {
+    description: 'Wait for an element to appear in the DOM matching the given selector. Supports querying inside iframes. Returns the matched elements once found.',
+    inputSchema: {
+      selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to wait for'),
+      iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to scope the query into'),
+      iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe to scope the query into'),
+      visibleOnly: z.boolean().optional().describe('Only match if the element is visible'),
+      timeoutMs: z.number().optional().describe('Maximum time to wait in milliseconds (default: 5000)'),
+    },
+  },
+  async ({ selector, iframeSelector, visibleOnly, iframeMcpId, timeoutMs }) => {
+    const result = await browserManager.waitForSelector(selector, iframeSelector, visibleOnly, iframeMcpId, timeoutMs);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// ─── Get Element At Point Tool ────────────────────────────────────────────
+
+server.registerTool(
+  'browser_get_element_at_point',
+  {
+    description: 'Get the topmost element details at a specific X/Y coordinate. Automatically traverses into iframes to find the true target element.',
+    inputSchema: {
+      x: z.number().describe('The X coordinate'),
+      y: z.number().describe('The Y coordinate'),
+    },
+  },
+  async ({ x, y }) => {
+    const result = await browserManager.getElementAtPoint(x, y);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }
 );
