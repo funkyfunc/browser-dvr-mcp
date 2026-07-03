@@ -88,7 +88,7 @@ server.registerTool(
     inputSchema: {
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to click'),
       mcpId: z.string().optional().describe('The mcpId of the element to click (returned by query_selector)'),
-      coordinate: z.tuple([z.number(), z.number()]).optional().describe('X, Y coordinates to click. Will bypass spatial occlusion checks.'),
+      coordinate: z.array(z.number()).length(2).optional().describe('X, Y coordinates to click. Will bypass spatial occlusion checks.'),
       timeoutMs: z.number().optional().describe('Time in ms to wait for the element to appear and become visible/unoccluded before clicking (default: 0)'),
     },
   },
@@ -112,7 +112,7 @@ server.registerTool(
     inputSchema: {
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element'),
       mcpId: z.string().optional().describe('The mcpId of the element'),
-      coordinate: z.tuple([z.number(), z.number()]).optional().describe('X, Y coordinates of the element'),
+      coordinate: z.array(z.number()).length(2).optional().describe('X, Y coordinates of the element'),
       text: z.string().describe('The text to type'),
       timeoutMs: z.number().optional().describe('Time in ms to wait for the element to appear and become visible/unoccluded before typing (default: 0)'),
     },
@@ -133,17 +133,22 @@ server.registerTool(
 server.registerTool(
   'browser_hover',
   {
-    description: 'Perform pre-execution spatial validation and hover over the target element. You must provide exactly one target identifier (backendNodeId, mcpId, or x/y coordinates).',
+    description: 'Hover over an element on the page.',
     inputSchema: {
       backendNodeId: z.number().optional().describe('The backend DOM node ID of the element to hover over'),
       mcpId: z.string().optional().describe('The mcpId of the element to hover over (returned by query_selector)'),
-      x: z.number().optional().describe('Direct X coordinate to hover over, bypassing spatial validation'),
-      y: z.number().optional().describe('Direct Y coordinate to hover over, bypassing spatial validation'),
+      coordinate: z.array(z.number()).length(2).optional().describe('X, Y coordinates to hover over. Will bypass spatial occlusion checks.'),
+      timeoutMs: z.number().optional().describe('Time in ms to wait for the element to appear and become visible/unoccluded before hovering (default: 0)'),
     },
   },
-  async ({ backendNodeId, mcpId, x, y }) => {
-    const coordinate = (x !== undefined && y !== undefined) ? [x, y] as [number, number] : undefined;
-    const result = await browserManager.hover({ backendNodeId, mcpId, coordinate });
+  async ({ backendNodeId, mcpId, coordinate, timeoutMs }) => {
+    let target: any = undefined;
+    if (coordinate) target = { coordinate, timeoutMs };
+    else if (backendNodeId) target = { backendNodeId, timeoutMs };
+    else if (mcpId) target = { mcpId, timeoutMs };
+    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate');
+
+    const result = await browserManager.hover(target);
     return { content: [{ type: 'text', text: result }] };
   }
 );
