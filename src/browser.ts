@@ -1607,7 +1607,9 @@ export class BrowserManager {
         matches: [],
         error: `No elements found matching the selector '${selector}'`,
         context: {
-          suggestion: 'CSS selectors cannot cross iframe boundaries. If you are targeting an element inside an iframe, use iframeMcpId to scope the query to that iframe.',
+          suggestion: iframeMcpId || iframeSelector || selector.includes('>>')
+            ? 'Ensure your selector is correct within the targeted iframe context.'
+            : 'CSS selectors cannot cross iframe boundaries. If you are targeting an element inside an iframe, use "iframe >> .selector" or the iframeMcpId parameter.',
           framesSearched: framesToSearch.length
         }
       } as any;

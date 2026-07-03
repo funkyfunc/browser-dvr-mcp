@@ -98,7 +98,7 @@ server.registerTool(
     if (coordinate) target = { coordinate, timeoutMs, forceSynthetic };
     else if (backendNodeId) target = { backendNodeId, timeoutMs, forceSynthetic };
     else if (mcpId) target = { mcpId, timeoutMs, forceSynthetic };
-    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate');
+    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate. Note: coordinate must be an array of two numbers [x, y], not an object {x: 1, y: 1}.');
 
     const result = await browserManager.click(target);
     return { content: [{ type: 'text', text: result }] };
@@ -123,7 +123,7 @@ server.registerTool(
     if (coordinate) target.coordinate = coordinate;
     else if (backendNodeId) target.backendNodeId = backendNodeId;
     else if (mcpId) target.mcpId = mcpId;
-    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate');
+    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate. Note: coordinate must be an array of two numbers [x, y], not an object {x: 1, y: 1}.');
 
     const result = await browserManager.type(target);
     return { content: [{ type: 'text', text: result }] };
@@ -147,7 +147,7 @@ server.registerTool(
     if (coordinate) target = { coordinate, timeoutMs };
     else if (backendNodeId) target = { backendNodeId, timeoutMs };
     else if (mcpId) target = { mcpId, timeoutMs };
-    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate');
+    else throw new Error('Must provide either backendNodeId, mcpId, or coordinate. Note: coordinate must be an array of two numbers [x, y], not an object {x: 1, y: 1}.');
 
     const result = await browserManager.hover(target);
     return { content: [{ type: 'text', text: result }] };
@@ -537,11 +537,17 @@ server.registerTool(
       iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe to scope the query into'),
       pierceAllFrames: z.boolean().optional().describe('Defaults to true. NOTE: Standard CSS selectors cannot natively cross iframe boundaries (e.g. "iframe h1" will fail). To query inside an iframe, use iframeMcpId or iframeSelector.'),
       visibleOnly: z.boolean().optional().describe('Strip out invisible or non-rendered elements (e.g., meta, script, hidden divs)'),
+      timeoutMs: z.number().optional().describe('Implicit wait time in ms to poll for the element before returning (default: 0)'),
     },
   },
-  async ({ selector, iframeSelector, visibleOnly, iframeMcpId }) => {
+  async ({ selector, iframeSelector, visibleOnly, iframeMcpId, timeoutMs }) => {
     // The underlying browser_query_selector already pierces all frames if iframe limits aren't set
-    const result = await browserManager.querySelector(selector, iframeSelector, visibleOnly, iframeMcpId);
+    let result;
+    if (timeoutMs && timeoutMs > 0) {
+      result = await browserManager.waitForSelector(selector, iframeSelector, visibleOnly, iframeMcpId, timeoutMs);
+    } else {
+      result = await browserManager.querySelector(selector, iframeSelector, visibleOnly, iframeMcpId);
+    }
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }
 );
