@@ -382,22 +382,27 @@ export class BrowserManager {
     return `Navigated to ${url}`;
   }
 
-  public async getAccessibilityTree(iframeSelector?: string): Promise<string> {
+  public async getAccessibilityTree(): Promise<string> {
     if (!this.cdpSession || !this.page) {
       throw new Error('No active CDP session. Launch browser first.');
     }
     
-    let frameId: string | undefined = undefined;
-    if (iframeSelector) {
-      const iframeHandle = await this.page.$(iframeSelector);
-      if (!iframeHandle) throw new Error(`Iframe not found for selector: ${iframeSelector}`);
-      const frame = await iframeHandle.contentFrame();
-      if (!frame) throw new Error(`Could not access content frame for iframe: ${iframeSelector}`);
-      frameId = (frame as any)._id || (frame as any).id;
+    let markdown = '';
+    const frames = this.page.frames();
+    for (const frame of frames) {
+      const frameId = (frame as any)._id || (frame as any).id;
+      try {
+        const result = await this.cdpSession.send('Accessibility.getFullAXTree', { frameId });
+        const treeMd = formatAccessibilityTree(result.nodes as AXNode[]);
+        if (treeMd && treeMd !== '*(Empty accessibility tree)*') {
+          markdown += `\n--- Frame: ${frame.url()} ---\n${treeMd}\n`;
+        }
+      } catch (err) {
+        // If it fails to fetch (e.g. cross-origin restriction without site isolation), just skip or note it
+      }
     }
 
-    const result = await this.cdpSession.send('Accessibility.getFullAXTree', frameId ? { frameId } : undefined);
-    return formatAccessibilityTree(result.nodes as AXNode[]);
+    return markdown.trim() || '*(Empty accessibility tree)*';
   }
 
   public async getMutations(): Promise<unknown[]> {
@@ -408,6 +413,31 @@ export class BrowserManager {
       win.__mcp_mutations = [];
       return result;
     });
+  }
+
+  private async getFrameOffset(handle: ElementHandle<Element>): Promise<{ x: number; y: number }> {
+    let offsetX = 0;
+    let offsetY = 0;
+    let currentFrame = (handle as any).executionContext?.()?.frame?.();
+    if (!currentFrame && (handle as any).frame) {
+      currentFrame = (handle as any).frame;
+    }
+    
+    while (currentFrame && currentFrame.parentFrame()) {
+      const frameElement = await currentFrame.frameElement();
+      if (frameElement) {
+        const rect = await frameElement.evaluate((el: Element) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y };
+        }).catch(() => null);
+        if (rect) {
+          offsetX += rect.x;
+          offsetY += rect.y;
+        }
+      }
+      currentFrame = currentFrame.parentFrame();
+    }
+    return { x: offsetX, y: offsetY };
   }
 
   private async validateSpatialGuard(target: number | { backendNodeId?: number; mcpId?: string }): Promise<{ x: number; y: number }> {
@@ -433,27 +463,7 @@ export class BrowserManager {
     }
     if (!elementHandle) throw new Error(`Could not find element.`);
     try {
-      let offsetX = 0;
-      let offsetY = 0;
-      let currentFrame = (elementHandle as any).executionContext?.()?.frame?.();
-      if (!currentFrame && (elementHandle as any).frame) {
-        currentFrame = (elementHandle as any).frame;
-      }
-      
-      while (currentFrame && currentFrame.parentFrame()) {
-        const frameElement = await currentFrame.frameElement();
-        if (frameElement) {
-          const rect = await frameElement.evaluate((el: Element) => {
-            const r = el.getBoundingClientRect();
-            return { x: r.x, y: r.y };
-          }).catch(() => null);
-          if (rect) {
-            offsetX += rect.x;
-            offsetY += rect.y;
-          }
-        }
-        currentFrame = currentFrame.parentFrame();
-      }
+      const offset = await this.getFrameOffset(elementHandle);
 
       const checkResult = (await elementHandle.evaluate((el: Element) => {
         if (!(el instanceof Element)) return { error: 'Node is not a DOM Element' };
@@ -474,8 +484,8 @@ export class BrowserManager {
       if (checkResult.occluded) throw new Error(`Pre-Execution Spatial Validation Failed: Element is occluded by '<${checkResult.occluder}>' at coordinates (${checkResult.coordinates?.x}, ${checkResult.coordinates?.y}).`);
       
       return { 
-        x: checkResult.coordinates.x + offsetX, 
-        y: checkResult.coordinates.y + offsetY 
+        x: checkResult.coordinates.x + offset.x, 
+        y: checkResult.coordinates.y + offset.y 
       };
     } finally {
       await elementHandle.dispose().catch(() => {});
@@ -1292,12 +1302,6 @@ export class BrowserManager {
         try {
           const mcpIdVal = await targetEl.evaluate((el) => el.getAttribute('data-mcp-id'));
           if (mcpIdVal) resolvedMcpId = mcpIdVal;
-
-          const remoteObject = targetEl.remoteObject?.() || (targetEl as any)._remoteObject;
-          if (remoteObject?.objectId && this.cdpSession) {
-            const { node } = await this.cdpSession.send('DOM.describeNode', { objectId: remoteObject.objectId });
-            resolvedBackendNodeId = node.backendNodeId;
-          }
         } catch { }
       }
     } else {
@@ -1305,6 +1309,16 @@ export class BrowserManager {
     }
 
     if (!targetEl) throw new Error('Element not found');
+
+    if (!resolvedBackendNodeId) {
+      try {
+        const remoteObject = targetEl.remoteObject?.() || (targetEl as any)._remoteObject;
+        if (remoteObject?.objectId && this.cdpSession) {
+          const { node } = await this.cdpSession.send('DOM.describeNode', { objectId: remoteObject.objectId });
+          resolvedBackendNodeId = node.backendNodeId;
+        }
+      } catch { }
+    }
 
     const result = await targetEl.evaluate((el: Element) => {
       const htmlEl = el as HTMLElement;
@@ -1323,44 +1337,49 @@ export class BrowserManager {
     return { ...result, backendNodeId: resolvedBackendNodeId, mcpId: resolvedMcpId };
   }
 
-  public async querySelector(selector: string, iframeSelector?: string): Promise<{
+  public async querySelector(selector: string, iframeSelector?: string, visibleOnly?: boolean): Promise<{
     matches: { tag: string; text: string; mcpId: string; boundingBox: { x: number; y: number; width: number; height: number } }[];
   }> {
     if (!this.page || !this.cdpSession) throw new Error('No active page session.');
 
-    let context: Page | import('puppeteer-core').Frame = this.page;
-    let iframeOffset = { x: 0, y: 0 };
+    const isXPath = selector.startsWith('xpath/');
+    const searchXPath = isXPath ? `::-p-xpath(${selector.slice('xpath/'.length)})` : '';
+    
+    let framesToSearch = this.page.frames();
     if (iframeSelector) {
       const iframeHandle = await this.page.$(iframeSelector);
       if (!iframeHandle) throw new Error(`Iframe not found for selector: ${iframeSelector}`);
-      
-      const rect = await iframeHandle.evaluate((el: Element) => {
-        const r = el.getBoundingClientRect();
-        return { x: r.x, y: r.y };
-      }).catch(() => null);
-      if (rect) iframeOffset = rect;
-
       const frame = await iframeHandle.contentFrame();
       if (!frame) throw new Error(`Could not access content frame for iframe: ${iframeSelector}`);
-      context = frame;
+      framesToSearch = [frame];
     }
 
-    const isXPath = selector.startsWith('xpath/');
-    let handles: ElementHandle<Element>[];
-
-    if (isXPath) {
-      const xpath = selector.slice('xpath/'.length);
-      handles = await context.$$(`::-p-xpath(${xpath})`) as ElementHandle<Element>[];
-    } else {
-      handles = await context.$$(selector) as ElementHandle<Element>[];
+    let handles: ElementHandle<Element>[] = [];
+    for (const frame of framesToSearch) {
+      if (isXPath) {
+        const frameHandles = await frame.$$(searchXPath);
+        handles.push(...(frameHandles as ElementHandle<Element>[]));
+      } else {
+        const frameHandles = await frame.$$(selector);
+        handles.push(...(frameHandles as ElementHandle<Element>[]));
+      }
     }
 
     const matches: { tag: string; text: string; mcpId: string; boundingBox: { x: number; y: number; width: number; height: number } }[] = [];
 
     for (const handle of handles) {
       try {
-        const info = await handle.evaluate((el: Element, offset: { x: number; y: number }) => {
+        const offset = await this.getFrameOffset(handle);
+        const info = await handle.evaluate((el: Element, offset: { x: number; y: number }, visibleOnly: boolean | undefined) => {
           const rect = el.getBoundingClientRect();
+          
+          if (visibleOnly) {
+            const style = window.getComputedStyle(el);
+            if (rect.width === 0 || rect.height === 0 || style.visibility === 'hidden' || style.display === 'none') {
+              return null;
+            }
+          }
+
           let mcpId = el.getAttribute('data-mcp-id');
           if (!mcpId && (window as any).__mcp_id_seq) {
             mcpId = ((window as any).__mcp_frame_prefix || '') + '-' + (window as any).__mcp_id_seq++;
@@ -1377,9 +1396,9 @@ export class BrowserManager {
             },
             mcpId: mcpId || ''
           };
-        }, iframeOffset);
+        }, offset, visibleOnly);
 
-        if (info.mcpId) {
+        if (info && info.mcpId) {
           matches.push(info);
         }
       } catch {

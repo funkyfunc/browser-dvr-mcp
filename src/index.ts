@@ -69,13 +69,10 @@ server.registerTool(
 server.registerTool(
   'browser_get_accessibility_tree',
   { 
-    description: 'Get the USAG accessibility tree of the active page in LLM-optimized Markdown.',
-    inputSchema: {
-      iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to fetch the tree for the iframe content instead of the main document')
-    }
+    description: 'Get the USAG accessibility tree of the active page in LLM-optimized Markdown. Natively pierces and aggregates all iframes.',
   },
-  async ({ iframeSelector }) => {
-    const result = await browserManager.getAccessibilityTree(iframeSelector);
+  async () => {
+    const result = await browserManager.getAccessibilityTree();
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -516,11 +513,12 @@ server.registerTool(
     description: 'Query the DOM using a CSS selector or XPath (prefix with "xpath/") and return all matching elements with their tag names, text content, bounding boxes, and backendNodeIds. Supports querying inside iframes.',
     inputSchema: {
       selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query'),
-      iframeSelector: z.string().optional().describe('CSS selector for an iframe to scope the query into'),
+      iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to scope the query into'),
+      visibleOnly: z.boolean().optional().describe('Strip out invisible or non-rendered elements (e.g., meta, script, hidden divs)'),
     },
   },
-  async ({ selector, iframeSelector }) => {
-    const result = await browserManager.querySelector(selector, iframeSelector);
+  async ({ selector, iframeSelector, visibleOnly }) => {
+    const result = await browserManager.querySelector(selector, iframeSelector, visibleOnly);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }
 );
