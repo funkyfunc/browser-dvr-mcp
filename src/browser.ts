@@ -387,6 +387,25 @@ export class BrowserManager {
       throw new Error('No active CDP session. Launch browser first.');
     }
     
+    // Proactively inject mcpIds into all elements across all frames to ensure discovery
+    const frames = this.page.frames();
+    for (const frame of frames) {
+      await frame.evaluate(() => {
+        if ((window as any).__mcp_id_seq && document.documentElement) {
+          const getOrAssign = (el: any) => {
+            if (!el.getAttribute('data-mcp-id')) {
+              el.setAttribute('data-mcp-id', ((window as any).__mcp_frame_prefix || '') + '-' + (window as any).__mcp_id_seq++);
+            }
+          };
+          getOrAssign(document.documentElement);
+          const elements = document.documentElement.querySelectorAll('*');
+          for (let i = 0; i < elements.length; i++) {
+            getOrAssign(elements[i]);
+          }
+        }
+      }).catch(() => {});
+    }
+
     let markdown = '';
     const mcpIdMap = new Map<number, string>();
     try {
@@ -408,7 +427,7 @@ export class BrowserManager {
       // Ignore if DOM.getDocument fails
     }
 
-    const frames = this.page.frames();
+
     for (const frame of frames) {
       const frameId = (frame as any)._id || (frame as any).id;
       try {
@@ -568,7 +587,7 @@ export class BrowserManager {
     }
   }
 
-  public async click(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; timeoutMs?: number }): Promise<string> {
+  public async click(target: number | { backendNodeId?: number; mcpId?: string; coordinate?: [number, number]; timeoutMs?: number; forceSynthetic?: boolean }): Promise<string> {
     const options = typeof target === 'number' ? { backendNodeId: target } : target;
     if (!this.page) throw new Error('No active page session.');
     let x: number, y: number;
@@ -579,11 +598,32 @@ export class BrowserManager {
       const coords = await this.validateSpatialGuard(options);
       x = coords.x; y = coords.y;
     }
-    await this.page.mouse.click(x, y);
+    if (options.forceSynthetic) {
+      await this.page.evaluate((posX, posY) => {
+        const el = document.elementFromPoint(posX, posY);
+        if (el && el instanceof HTMLElement) el.click();
+      }, x, y);
+    } else {
+      await this.page.mouse.click(x, y);
+    }
     await new Promise(r => setTimeout(r, 250)); // Allow time for potential DOM mutations
     const hitFeedback = await this.getHitFeedback(x, y);
     const mutations = await this.getMutations();
-    const mutationFeedback = mutations.length > 0 ? ` (Resulted in ${mutations.length} DOM mutations)` : '';
+    
+    let mutationFeedback = '';
+    if (mutations.length > 0) {
+      const summary = new Map<string, number>();
+      for (const m of mutations as any[]) {
+        if (m.type === 'childList') {
+          for (const node of (m.addedNodes || [])) summary.set(node.tagName, (summary.get(node.tagName) || 0) + 1);
+          for (const node of (m.removedNodes || [])) summary.set(node.tagName, (summary.get(node.tagName) || 0) + 1);
+        } else {
+          if (m.tagName) summary.set(m.tagName, (summary.get(m.tagName) || 0) + 1);
+        }
+      }
+      const topTags = Array.from(summary.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]).join(', ');
+      mutationFeedback = ` (Resulted in ${mutations.length} DOM mutations. Modified elements include: ${topTags})`;
+    }
     return `Successfully clicked element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}${mutationFeedback}`;
   }
 
@@ -604,7 +644,21 @@ export class BrowserManager {
     await new Promise(r => setTimeout(r, 250));
     const hitFeedback = await this.getHitFeedback(x, y);
     const mutations = await this.getMutations();
-    const mutationFeedback = mutations.length > 0 ? ` (Resulted in ${mutations.length} DOM mutations)` : '';
+    
+    let mutationFeedback = '';
+    if (mutations.length > 0) {
+      const summary = new Map<string, number>();
+      for (const m of mutations as any[]) {
+        if (m.type === 'childList') {
+          for (const node of (m.addedNodes || [])) summary.set(node.tagName, (summary.get(node.tagName) || 0) + 1);
+          for (const node of (m.removedNodes || [])) summary.set(node.tagName, (summary.get(node.tagName) || 0) + 1);
+        } else {
+          if (m.tagName) summary.set(m.tagName, (summary.get(m.tagName) || 0) + 1);
+        }
+      }
+      const topTags = Array.from(summary.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]).join(', ');
+      mutationFeedback = ` (Resulted in ${mutations.length} DOM mutations. Modified elements include: ${topTags})`;
+    }
     return `Successfully typed text into element at coordinates (${x}, ${y})${hitFeedback}${mutationFeedback}`;
   }
 
@@ -623,7 +677,21 @@ export class BrowserManager {
     await new Promise(r => setTimeout(r, 250));
     const hitFeedback = await this.getHitFeedback(x, y);
     const mutations = await this.getMutations();
-    const mutationFeedback = mutations.length > 0 ? ` (Resulted in ${mutations.length} DOM mutations)` : '';
+    
+    let mutationFeedback = '';
+    if (mutations.length > 0) {
+      const summary = new Map<string, number>();
+      for (const m of mutations as any[]) {
+        if (m.type === 'childList') {
+          for (const node of (m.addedNodes || [])) summary.set(node.tagName, (summary.get(node.tagName) || 0) + 1);
+          for (const node of (m.removedNodes || [])) summary.set(node.tagName, (summary.get(node.tagName) || 0) + 1);
+        } else {
+          if (m.tagName) summary.set(m.tagName, (summary.get(m.tagName) || 0) + 1);
+        }
+      }
+      const topTags = Array.from(summary.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]).join(', ');
+      mutationFeedback = ` (Resulted in ${mutations.length} DOM mutations. Modified elements include: ${topTags})`;
+    }
     return `Successfully hovered element ID ${options.backendNodeId || options.mcpId} at coordinates (${x}, ${y})${hitFeedback}${mutationFeedback}`;
   }
 

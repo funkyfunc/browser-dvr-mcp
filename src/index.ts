@@ -90,13 +90,14 @@ server.registerTool(
       mcpId: z.string().optional().describe('The mcpId of the element to click (returned by query_selector)'),
       coordinate: z.array(z.number()).length(2).optional().describe('X, Y coordinates to click. Will bypass spatial occlusion checks.'),
       timeoutMs: z.number().optional().describe('Time in ms to wait for the element to appear and become visible/unoccluded before clicking (default: 0)'),
+      forceSynthetic: z.boolean().optional().describe('Force a synthetic JavaScript click (el.click()) instead of a native mouse click. Useful for React SPA iframe boundaries.'),
     },
   },
-  async ({ backendNodeId, mcpId, coordinate, timeoutMs }) => {
+  async ({ backendNodeId, mcpId, coordinate, timeoutMs, forceSynthetic }) => {
     let target: any = undefined;
-    if (coordinate) target = { coordinate, timeoutMs };
-    else if (backendNodeId) target = { backendNodeId, timeoutMs };
-    else if (mcpId) target = { mcpId, timeoutMs };
+    if (coordinate) target = { coordinate, timeoutMs, forceSynthetic };
+    else if (backendNodeId) target = { backendNodeId, timeoutMs, forceSynthetic };
+    else if (mcpId) target = { mcpId, timeoutMs, forceSynthetic };
     else throw new Error('Must provide either backendNodeId, mcpId, or coordinate');
 
     const result = await browserManager.click(target);
