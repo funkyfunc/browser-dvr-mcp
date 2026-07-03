@@ -15,6 +15,7 @@ export interface AXNode {
   value?: { value: unknown };
   childIds?: string[];
   backendDOMNodeId?: number;
+  mcpId?: string;
   properties?: AXProperty[];
 }
 
@@ -146,6 +147,9 @@ export function formatAccessibilityTree(nodes: AXNode[], semanticOnly: boolean =
       // Backend DOM node ID mapping
       if (node.backendDOMNodeId !== undefined) {
         props.push(`backendNodeId: ${node.backendDOMNodeId}`);
+      }
+      if (node.mcpId) {
+        props.push(`mcpId: "${node.mcpId}"`);
       }
 
       if (props.length > 0) {

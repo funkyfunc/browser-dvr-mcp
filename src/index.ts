@@ -519,10 +519,12 @@ server.registerTool(
       selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query'),
       iframeSelector: z.string().optional().describe('Optional CSS selector for an iframe to scope the query into'),
       iframeMcpId: z.string().optional().describe('Optional mcpId for an iframe to scope the query into'),
+      pierceAllFrames: z.boolean().optional().describe('Search across the main document and all iframes natively. Defaults to true if no iframe limits are set.'),
       visibleOnly: z.boolean().optional().describe('Strip out invisible or non-rendered elements (e.g., meta, script, hidden divs)'),
     },
   },
   async ({ selector, iframeSelector, visibleOnly, iframeMcpId }) => {
+    // The underlying browser_query_selector already pierces all frames if iframe limits aren't set
     const result = await browserManager.querySelector(selector, iframeSelector, visibleOnly, iframeMcpId);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }

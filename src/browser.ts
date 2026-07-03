@@ -388,12 +388,38 @@ export class BrowserManager {
     }
     
     let markdown = '';
+    const mcpIdMap = new Map<number, string>();
+    try {
+      const { root } = await this.cdpSession.send('DOM.getDocument', { depth: -1, pierce: true });
+      const traverse = (node: any) => {
+        if (node.attributes) {
+          for (let i = 0; i < node.attributes.length; i += 2) {
+            if (node.attributes[i] === 'data-mcp-id') {
+              mcpIdMap.set(node.backendNodeId, node.attributes[i + 1]);
+              break;
+            }
+          }
+        }
+        if (node.children) node.children.forEach(traverse);
+        if (node.contentDocument) traverse(node.contentDocument);
+      };
+      traverse(root);
+    } catch (e) {
+      // Ignore if DOM.getDocument fails
+    }
+
     const frames = this.page.frames();
     for (const frame of frames) {
       const frameId = (frame as any)._id || (frame as any).id;
       try {
         const result = await this.cdpSession.send('Accessibility.getFullAXTree', { frameId });
-        const treeMd = formatAccessibilityTree(result.nodes as AXNode[], semanticOnly);
+        const nodes = result.nodes as AXNode[];
+        for (const node of nodes) {
+          if (node.backendDOMNodeId && mcpIdMap.has(node.backendDOMNodeId)) {
+            node.mcpId = mcpIdMap.get(node.backendDOMNodeId);
+          }
+        }
+        const treeMd = formatAccessibilityTree(nodes, semanticOnly);
         if (treeMd && treeMd !== '*(Empty accessibility tree)*') {
           markdown += `\n--- Frame: ${frame.url()} ---\n${treeMd}\n`;
         }
@@ -1390,57 +1416,70 @@ export class BrowserManager {
       framesToSearch = [frame];
     }
 
-    let handles: ElementHandle<Element>[] = [];
+    const matches: { tag: string; text: string; mcpId: string; boundingBox: { x: number; y: number; width: number; height: number }; isVisible: boolean; isDisabled: boolean; iframeMcpId?: string }[] = [];
+
     for (const frame of framesToSearch) {
-      if (isXPath) {
-        const frameHandles = await frame.$$(searchXPath);
-        handles.push(...(frameHandles as ElementHandle<Element>[]));
-      } else {
-        const frameHandles = await frame.$$(selector);
-        handles.push(...(frameHandles as ElementHandle<Element>[]));
+      let currentFrameMcpId = '';
+      if (frame !== this.page.mainFrame()) {
+        try {
+          const frameEl = await frame.frameElement();
+          if (frameEl) {
+             currentFrameMcpId = await frameEl.evaluate(el => el.getAttribute('data-mcp-id') || '');
+          }
+        } catch { }
       }
-    }
+      
+      let frameHandles = [];
+      if (isXPath) {
+        frameHandles = await frame.$$(searchXPath);
+      } else {
+        frameHandles = await frame.$$(selector);
+      }
 
-    const matches: { tag: string; text: string; mcpId: string; boundingBox: { x: number; y: number; width: number; height: number } }[] = [];
-
-    for (const handle of handles) {
-      try {
-        const offset = await this.getFrameOffset(handle);
-        const info = await handle.evaluate((el: Element, offset: { x: number; y: number }, visibleOnly: boolean | undefined) => {
-          const rect = el.getBoundingClientRect();
-          
-          if (visibleOnly) {
+      for (const handle of frameHandles as ElementHandle<Element>[]) {
+        try {
+          const offset = await this.getFrameOffset(handle);
+          const info = await handle.evaluate((el: Element, offset: { x: number; y: number }, visibleOnly: boolean | undefined) => {
+            const rect = el.getBoundingClientRect();
             const style = window.getComputedStyle(el);
-            if (rect.width === 0 || rect.height === 0 || style.visibility === 'hidden' || style.display === 'none') {
+            const visible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+            
+            if (visibleOnly && !visible) {
               return null;
             }
-          }
 
-          let mcpId = el.getAttribute('data-mcp-id');
-          if (!mcpId && (window as any).__mcp_id_seq) {
-            mcpId = ((window as any).__mcp_frame_prefix || '') + '-' + (window as any).__mcp_id_seq++;
-            el.setAttribute('data-mcp-id', mcpId);
-          }
-          return {
-            tag: el.tagName.toLowerCase(),
-            text: ((el as HTMLElement).innerText || el.textContent || '').substring(0, 200).trim(),
-            boundingBox: { 
-              x: rect.x + offset.x, 
-              y: rect.y + offset.y, 
-              width: rect.width, 
-              height: rect.height 
-            },
-            mcpId: mcpId || ''
-          };
-        }, offset, visibleOnly);
+            const htmlEl = el as HTMLElement;
+            const disabled = (htmlEl as any).disabled === true || el.getAttribute('aria-disabled') === 'true';
 
-        if (info && info.mcpId) {
-          matches.push(info);
+            let mcpId = el.getAttribute('data-mcp-id');
+            if (!mcpId && (window as any).__mcp_id_seq) {
+              mcpId = ((window as any).__mcp_frame_prefix || '') + '-' + (window as any).__mcp_id_seq++;
+              el.setAttribute('data-mcp-id', mcpId);
+            }
+            return {
+              tag: el.tagName.toLowerCase(),
+              text: ((el as HTMLElement).innerText || el.textContent || '').substring(0, 200).trim(),
+              boundingBox: { 
+                x: rect.x + offset.x, 
+                y: rect.y + offset.y, 
+                width: rect.width, 
+                height: rect.height 
+              },
+              mcpId: mcpId || '',
+              isVisible: visible,
+              isDisabled: disabled
+            };
+          }, offset, visibleOnly);
+
+          if (info && info.mcpId) {
+            if (currentFrameMcpId) (info as any).iframeMcpId = currentFrameMcpId;
+            matches.push(info as any);
+          }
+        } catch {
+          // Ignore evaluation errors
+        } finally {
+          await handle.dispose().catch(() => {});
         }
-      } catch {
-        // Ignore evaluation errors
-      } finally {
-        await handle.dispose().catch(() => {});
       }
     }
 
