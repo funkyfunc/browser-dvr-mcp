@@ -455,11 +455,51 @@ export async function atomicKeyPress(
  */
 export async function atomicScroll(
   page: Page | Frame,
-  _cdpSession: CDPSession,
+  cdpSession: CDPSession,
   direction: 'up' | 'down' | 'top' | 'bottom',
   telemetry: SessionTelemetryManager,
-  amount?: number
+  amount?: number,
+  backendNodeId?: number
 ): Promise<AtomicInteractResult> {
+  if (backendNodeId !== undefined) {
+    try {
+      const { object } = await cdpSession.send('DOM.resolveNode', { backendNodeId });
+      if (object.objectId) {
+        await cdpSession.send('Runtime.callFunctionOn', {
+          objectId: object.objectId,
+          functionDeclaration: `function(dir, amt) {
+            const scrollAmt = amt || this.clientHeight || 300;
+            if (dir === 'down') this.scrollTop += scrollAmt;
+            else if (dir === 'up') this.scrollTop -= scrollAmt;
+            else if (dir === 'bottom') this.scrollTop = this.scrollHeight;
+            else if (dir === 'top') this.scrollTop = 0;
+          }`,
+          arguments: [{ value: direction }, { value: amount }],
+          awaitPromise: true
+        });
+        await cdpSession.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+
+        telemetry.addInteraction({
+          type: 'scroll',
+          timestamp: Date.now(),
+          details: `element [id:${backendNodeId}] ${direction}${amount ? ` ${amount}px` : ''}`,
+        });
+
+        return {
+          success: true,
+          action: 'scroll',
+          feedback: `Scrolled element [id:${backendNodeId}] ${direction}${amount ? ` by ${amount}px` : ''}.`,
+        };
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        action: 'scroll',
+        feedback: `Failed to scroll element [id:${backendNodeId}]: ${err.message}`,
+      };
+    }
+  }
+
   await page.evaluate((dir, amt) => {
     const scrollAmt = amt || window.innerHeight;
     if (dir === 'down') window.scrollBy(0, scrollAmt);

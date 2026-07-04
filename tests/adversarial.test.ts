@@ -571,5 +571,60 @@ describe('Adversarial Testbed', () => {
         expect(successExists).toBe(false);
       });
     });
+
+    // ── Category 4: Complex Layout & Nested Frames ───────────────────────────
+
+    describe('Category 4: Complex Layout & Nested Frames', () => {
+      beforeAll(async () => {
+        await conn.navigate(TESTBED_URL);
+        await new Promise(r => setTimeout(r, 2000));
+        await dismissModalIfPresent();
+        await scrollToSection('hurdle-4-1');
+        await new Promise(r => setTimeout(r, 1000));
+      });
+
+      it('should pierce nested scaled frames and click the button', async () => {
+        const page = conn.getPage()!;
+        const cdp = conn.getCDPSession()!;
+
+        // Find backendNodeId of the button inside the child frame
+        const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
+        let btnBackendNodeId: number | null = null;
+        const findTarget = (node: any) => {
+          if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('nested-btn')) {
+            btnBackendNodeId = node.backendNodeId;
+            return;
+          }
+          if (node.children) {
+            for (const c of node.children) findTarget(c);
+          }
+          if (node.contentDocument) findTarget(node.contentDocument);
+        };
+        findTarget(doc.root);
+        expect(btnBackendNodeId).not.toBeNull();
+
+        // Resolve target frame context
+        const { findFrameForBackendNodeId } = await import('../src/layer1/atomicInteract.js');
+        const frame = await findFrameForBackendNodeId(page, btnBackendNodeId!);
+        
+        const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+        const { getElementTree } = await import('../src/layer2/semanticSurface.js');
+        const result = await getElementTree(cdp, nodeIndex, btnBackendNodeId!, { semanticOnly: true, frameId });
+        expect(result.text).toContain('Verify Nested');
+
+        // Let's click it!
+        const targetCdp = (frame as any).client || cdp;
+        const { resolveAndValidateSpatialCoordinate } = await import('../src/layer1/spatialValidation.js');
+        const validation = await resolveAndValidateSpatialCoordinate(page, targetCdp, btnBackendNodeId!, 3000, frame, undefined, true);
+        expect(validation.valid).toBe(true);
+        expect(validation.coordinates).toBeDefined();
+
+        await coordinateClick(page, cdp, validation.coordinates!.x, validation.coordinates!.y, telemetry);
+
+        const successFlag = await waitForFlag('nested-iframe-success-flag', 3000);
+        expect(successFlag).toBe(true);
+      });
+    });
+
   });
 });

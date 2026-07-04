@@ -386,7 +386,7 @@ server.registerTool(
 
       case 'scroll':
         if (!direction) throw new Error('scroll action requires the "direction" parameter.');
-        result = await atomicScroll(targetFrame, targetCdp, direction, tel, amount);
+        result = await atomicScroll(targetFrame, targetCdp, direction, tel, amount, backendNodeId);
         break;
 
       case 'drag_and_drop':
@@ -831,8 +831,44 @@ server.registerTool(
       '3. Never dump all logs/network at once. Always start with the summary.',
   },
   async () => {
+    const { page } = requireSession();
     const tel = requireTelemetry();
-    const summary = tel.getSummary();
+    const summary = tel.getSummary() as any;
+
+    try {
+      const activeOverlay = await page.evaluate(() => {
+        const elements = document.querySelectorAll('*');
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+          const style = window.getComputedStyle(el);
+          if ((style.position === 'fixed' || style.position === 'absolute') &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              parseFloat(style.opacity) > 0.1 &&
+              (el as HTMLElement).offsetWidth > window.innerWidth * 0.9 &&
+              (el as HTMLElement).offsetHeight > window.innerHeight * 0.9) {
+            const zIndex = parseInt(style.zIndex || '0', 10);
+            if (zIndex > 100) {
+              const selector = el.tagName.toLowerCase() + 
+                               (el.id ? '#' + el.id : '') + 
+                               (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : '');
+              return { selector, zIndex };
+            }
+          }
+        }
+        return null;
+      });
+
+      if (activeOverlay) {
+        if (!summary.alerts) {
+          summary.alerts = [];
+        }
+        summary.alerts.push(`⚠ Full-screen blocking overlay active: <${activeOverlay.selector}> (z-index: ${activeOverlay.zIndex}). This element may intercept background interactions.`);
+      }
+    } catch {
+      // Ignore evaluation failures
+    }
+
     return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
   }
 );

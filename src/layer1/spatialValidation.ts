@@ -114,43 +114,6 @@ export async function validateSpatialCoordinate(
       localY = centerY - offset.y;
     }
 
-    // Check what's actually at the center of the target (within targetFrame's context using local coords)
-    const hitTest = await targetFrame.evaluate((cx, cy) => {
-      const topEl = document.elementFromPoint(cx, cy);
-      if (!topEl) return { found: false };
-
-      return {
-        found: true,
-        tag: topEl.tagName.toLowerCase(),
-        id: topEl.id || undefined,
-        className: typeof topEl.className === 'string' ? topEl.className.trim().split(/\s+/).slice(0, 2).join('.') : undefined,
-      };
-    }, localX, localY);
-
-    if (!hitTest.found) {
-      return {
-        valid: false,
-        coordinates: { x: centerX, y: centerY },
-        occluded: true,
-        occluder: 'No element found at target coordinates',
-        targetRect,
-      };
-    }
-
-    // Verify the hit element is the target or contains/is contained by target
-    const containsCheck = await targetFrame.evaluate((cx, cy) => {
-      const topEl = document.elementFromPoint(cx, cy);
-      if (!topEl) return { occluded: true, occluder: 'null' };
-
-      const rect = topEl.getBoundingClientRect();
-      const occluderSelector = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className && typeof topEl.className === 'string' ? '.' + topEl.className.trim().split(/\s+/).slice(0, 2).join('.') : ''}`;
-      return {
-        occluded: false,
-        occluder: occluderSelector,
-        occluderRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-      };
-    }, localX, localY);
-
     // Verify via CDP (using the target frame's session) that the topmost node at point matches our target
     try {
       // Determine what coordinates to pass to CDP DOM.getNodeForLocation.
@@ -201,21 +164,43 @@ export async function validateSpatialCoordinate(
         // Safe fallback
       }
 
+      // If we got here, it's actually occluded or the hit node doesn't match!
+      // ONLY NOW do we run the JS checks to get the descriptive error message, or if that fails, a fallback message.
+      let occluderName = 'unknown element';
+      let occluderRect: BoundingBox | undefined = undefined;
+
+      try {
+        const containsCheck = await targetFrame.evaluate((cx, cy) => {
+          const topEl = document.elementFromPoint(cx, cy);
+          if (!topEl) return null;
+          const rect = topEl.getBoundingClientRect();
+          const selector = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className && typeof topEl.className === 'string' ? '.' + topEl.className.trim().split(/\\s+/).slice(0, 2).join('.') : ''}`;
+          return { selector, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+        }, localX, localY);
+
+        if (containsCheck) {
+          occluderName = containsCheck.selector;
+          occluderRect = containsCheck.rect;
+        }
+      } catch {
+        // Fallback if local coordinates are weird or out of frame bounds
+      }
+
       return {
         valid: false,
         coordinates: { x: centerX, y: centerY },
         occluded: true,
-        occluder: `Interaction hit element <${containsCheck.occluder}> instead of target. The element may be clipped, covered, or hidden by layout/CSS constraints.`,
-        occluderRect: containsCheck.occluderRect as BoundingBox,
+        occluder: `Interaction hit element <${occluderName}> instead of target. The element may be clipped, covered, or hidden by layout/CSS constraints.`,
+        occluderRect: occluderRect || targetRect,
         targetRect,
       };
+
     } catch (err: any) {
       return {
         valid: false,
         coordinates: { x: centerX, y: centerY },
-        occluded: true,
-        occluder: `Interaction hit element <${containsCheck.occluder}> instead of target. (CDP location resolution error: ${err.message})`,
-        occluderRect: containsCheck.occluderRect as BoundingBox,
+        occluded: false,
+        occluder: `Failed to perform native spatial validation: ${err.message}`,
         targetRect,
       };
     }
