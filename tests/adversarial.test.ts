@@ -22,7 +22,7 @@ import { join } from 'path';
 import { CDPConnectionManager } from '../src/core/CDPConnectionManager.js';
 import { ImmutableNodeIndex } from '../src/core/ImmutableNodeIndex.js';
 import { SessionTelemetryManager } from '../src/telemetry/SessionTelemetryManager.js';
-import { coordinateClick, atomicType } from '../src/layer1/atomicInteract.js';
+import { coordinateClick } from '../src/layer1/atomicInteract.js';
 import { evaluateInContext } from '../src/layer1/evaluateInContext.js';
 import { getSemanticSurface } from '../src/layer2/semanticSurface.js';
 
@@ -404,6 +404,7 @@ describe('Adversarial Testbed', () => {
 
         // Wait for the 1500ms SPA content load
         const dashboardLoaded = await waitForFlag('spa-success-btn', 5000);
+        expect(dashboardLoaded).toBe(true);
 
         const dashboardContent = await evaluate(`
           document.getElementById('router-outlet')?.innerHTML?.includes('Dashboard View')

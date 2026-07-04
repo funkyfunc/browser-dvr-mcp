@@ -12,17 +12,8 @@ import { join } from 'path';
 import { CDPConnectionManager } from '../src/core/CDPConnectionManager.js';
 import { ImmutableNodeIndex } from '../src/core/ImmutableNodeIndex.js';
 import { SessionTelemetryManager } from '../src/telemetry/SessionTelemetryManager.js';
-import {
-  atomicClick,
-  atomicType,
-  atomicKeyPress,
-  atomicScroll,
-  coordinateClick,
-} from '../src/layer1/atomicInteract.js';
-import {
-  validateSpatialCoordinate,
-  resolveElementCenter,
-} from '../src/layer1/spatialValidation.js';
+import { atomicKeyPress, atomicScroll, coordinateClick } from '../src/layer1/atomicInteract.js';
+import { validateSpatialCoordinate } from '../src/layer1/spatialValidation.js';
 import { evaluateInContext } from '../src/layer1/evaluateInContext.js';
 import { getSemanticSurface } from '../src/layer2/semanticSurface.js';
 import { getStateDelta } from '../src/layer2/stateDelta.js';
@@ -46,27 +37,6 @@ async function evaluate(expression: string): Promise<any> {
   const cdp = conn.getCDPSession()!;
   const result = await evaluateInContext(page, cdp, expression);
   return result;
-}
-
-async function hasSuccessFlag(flagId: string): Promise<boolean> {
-  const result = await evaluate(`!!document.getElementById('${flagId}')`);
-  return result.success && result.result === true;
-}
-
-async function waitForFlag(flagId: string, timeoutMs = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await hasSuccessFlag(flagId)) return true;
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return false;
-}
-
-async function scrollToSection(sectionId: string): Promise<void> {
-  await evaluate(
-    `document.getElementById('${sectionId}')?.scrollIntoView({ block: 'start', behavior: 'instant' })`,
-  );
-  await new Promise((r) => setTimeout(r, 200));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,11 +170,7 @@ describe('Core Architecture', () => {
       // Checkpoint was taken during getSemanticSurface
       // Without any action, delta should be null or minimal
       const result = await getStateDelta(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
-      // No structural changes expected
-      if (result.delta) {
-        // Minor reparse differences are acceptable
-        expect(result.delta.added.length + result.delta.removed.length).toBeLessThan(5);
-      }
+      expect(result.text).toContain('No structural changes detected');
     });
 
     it('should detect structural changes after DOM modification', async () => {

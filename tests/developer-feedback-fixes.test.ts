@@ -101,7 +101,7 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     expect(currentStyle).toContain('solid');
 
     // Verify screenshot highlight badge creation
-    const badgeInfo = await headingHandle!.evaluate((el: any) => {
+    const badgeInfo = await headingHandle!.evaluate(() => {
       const badge = document.createElement('div');
       badge.id = 'test-badge-38';
       badge.textContent = 'ID: 38';
@@ -111,7 +111,7 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     expect(badgeInfo.exists).toBe(true);
 
     // Verify cleanup removes it
-    const badgeRemoved = await headingHandle!.evaluate((el: any) => {
+    const badgeRemoved = await headingHandle!.evaluate(() => {
       const badge = document.getElementById('test-badge-38');
       if (badge) badge.remove();
       return !document.getElementById('test-badge-38');

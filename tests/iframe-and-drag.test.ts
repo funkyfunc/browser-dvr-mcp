@@ -8,7 +8,6 @@ import {
 } from '../src/layer1/atomicInteract.js';
 import { getSemanticSurface } from '../src/layer2/semanticSurface.js';
 import { ImmutableNodeIndex } from '../src/core/ImmutableNodeIndex.js';
-import { validateSpatialCoordinate } from '../src/layer1/spatialValidation.js';
 
 const CHROME_PATHS = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
