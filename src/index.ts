@@ -777,11 +777,33 @@ server.registerTool(
     inputSchema: {
       backendNodeId: z.number().describe('The backend DOM node ID of the root element to inspect'),
       semanticOnly: z.boolean().optional().describe('Filter out structural-only nodes (default: true)'),
+      frameIndex: z.number().optional().describe('Target frame index (optional, defaults to automatic detection if backendNodeId is used).'),
     },
   },
-  async ({ backendNodeId, semanticOnly }) => {
-    const { cdp } = requireSession();
-    const result = await getElementTree(cdp, nodeIndex, backendNodeId, { semanticOnly });
+  async ({ backendNodeId, semanticOnly, frameIndex }) => {
+    const { page, cdp } = requireSession();
+
+    let targetFrame = page.mainFrame();
+    if (frameIndex !== undefined) {
+      const frames = page.frames();
+      if (frameIndex < 0 || frameIndex >= frames.length) {
+        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+      }
+      targetFrame = frames[frameIndex];
+    } else {
+      try {
+        targetFrame = await findFrameForBackendNodeId(page, backendNodeId);
+      } catch {
+        // Fallback to mainFrame
+      }
+    }
+
+    let frameId: string | undefined = undefined;
+    if (targetFrame !== page.mainFrame()) {
+      frameId = (targetFrame as any)._id ?? (targetFrame as any)._frameId ?? (targetFrame as any).id;
+    }
+
+    const result = await getElementTree(cdp, nodeIndex, backendNodeId, { semanticOnly, frameId });
     return {
       content: [
         { type: 'text', text: result.text },
@@ -1181,11 +1203,17 @@ server.registerTool(
             });
           }, searchText, visibleOnly);
 
+          const offset = await getFrameOffset(frame);
           for (const m of frameMatches) {
             if (visibleOnly && !m.visible) continue;
             matches.push({
               text: m.text,
-              boundingBox: m.boundingBox,
+              boundingBox: {
+                x: m.boundingBox.x + offset.x,
+                y: m.boundingBox.y + offset.y,
+                width: m.boundingBox.width,
+                height: m.boundingBox.height,
+              },
             });
           }
         } catch (err) {

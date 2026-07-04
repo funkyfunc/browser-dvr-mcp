@@ -221,4 +221,108 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     await browser.close();
   });
 
+  it('should find text coordinates relative to main viewport inside iframes', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+    });
+    const page = await browser.newPage();
+    await page.setContent(`
+      <body style="margin: 0; padding: 0;">
+        <div style="height: 100px;">Main Content</div>
+        <iframe id="frame1" style="width: 300px; height: 300px; margin-top: 100px; margin-left: 50px; border: none;" srcdoc="
+          <body style='margin: 0;'>
+            <div id='target' style='margin-top: 50px; margin-left: 20px; width: 100px; height: 50px;'>Iframe Target Text</div>
+          </body>
+        "></iframe>
+      </body>
+    `);
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Resolve matches
+    const searchText = 'Iframe Target Text';
+    const matches: any[] = [];
+    const { getFrameOffset } = await import('../src/layer1/spatialValidation.js');
+
+    for (const frame of page.frames()) {
+      const frameMatches = await frame.evaluate((searchStr) => {
+        const el = document.getElementById('target');
+        if (el && el.textContent?.includes(searchStr)) {
+          const rect = el.getBoundingClientRect();
+          return [{ text: el.textContent, boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }];
+        }
+        return [];
+      }, searchText);
+
+      const offset = await getFrameOffset(frame);
+      for (const m of frameMatches) {
+        matches.push({
+          text: m.text,
+          boundingBox: {
+            x: m.boundingBox.x + offset.x,
+            y: m.boundingBox.y + offset.y,
+            width: m.boundingBox.width,
+            height: m.boundingBox.height,
+          }
+        });
+      }
+    }
+
+    expect(matches.length).toBe(1);
+    expect(matches[0].boundingBox.x).toBeCloseTo(70, 0);
+    // 100px (header height) + 100px (iframe margin top) + 50px (target margin top) = 250px
+    expect(matches[0].boundingBox.y).toBeCloseTo(250, 0);
+
+    await browser.close();
+  });
+
+  it('should support get_element_tree for elements inside iframes', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+    });
+    const page = await browser.newPage();
+    await page.setContent(`
+      <body style="margin: 0; padding: 0;">
+        <iframe id="frame1" style="width: 300px; height: 300px; border: none;" srcdoc="
+          <body style='margin: 0;'>
+            <button id='btn'>Iframe Button</button>
+          </body>
+        "></iframe>
+      </body>
+    `);
+    await new Promise(r => setTimeout(r, 1000));
+
+    const cdp = await page.createCDPSession();
+    await cdp.send('DOM.enable');
+
+    const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
+    let btnBackendNodeId: number | null = null;
+    const findTarget = (node: any) => {
+      if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('btn')) {
+        btnBackendNodeId = node.backendNodeId;
+        return;
+      }
+      if (node.children) {
+        for (const c of node.children) findTarget(c);
+      }
+      if (node.contentDocument) findTarget(node.contentDocument);
+    };
+    findTarget(doc.root);
+    expect(btnBackendNodeId).not.toBeNull();
+
+    const subframe = page.frames().find(f => f !== page.mainFrame())!;
+    const frameId = (subframe as any)._id ?? (subframe as any)._frameId ?? (subframe as any).id;
+
+    const { getElementTree } = await import('../src/layer2/semanticSurface.js');
+    const { ImmutableNodeIndex } = await import('../src/core/ImmutableNodeIndex.js');
+    const nodeIdx = new ImmutableNodeIndex();
+
+    const result = await getElementTree(cdp, nodeIdx, btnBackendNodeId!, { semanticOnly: true, frameId });
+    expect(result.text).toContain('button');
+    expect(result.text).toContain('Iframe Button');
+
+    await browser.close();
+  });
+
 });

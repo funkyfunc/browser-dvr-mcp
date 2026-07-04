@@ -376,7 +376,7 @@ export async function getElementTree(
   cdpSession: CDPSession,
   nodeIndex: ImmutableNodeIndex,
   backendNodeId: number,
-  options: { semanticOnly?: boolean } = {}
+  options: { semanticOnly?: boolean; frameId?: string } = {}
 ): Promise<{ text: string; diagnostics?: string[] }> {
   const semanticOnly = options.semanticOnly !== false;
   const diagnostics: string[] = [];
@@ -384,9 +384,11 @@ export async function getElementTree(
   let nodes: AXNodeInput[] = [];
 
   try {
-    const { nodes: axNodes } = await cdpSession.send('Accessibility.getFullAXTree', {
-      depth: 100, // Fetch the full tree
-    });
+    const params: Record<string, any> = { depth: 100 };
+    if (options.frameId) {
+      params.frameId = options.frameId;
+    }
+    const { nodes: axNodes } = await cdpSession.send('Accessibility.getFullAXTree', params);
     nodes = axNodes as AXNodeInput[];
   } catch (err: any) {
     diagnostics.push(`Failed to get AX tree via CDP: ${err.message}`);
