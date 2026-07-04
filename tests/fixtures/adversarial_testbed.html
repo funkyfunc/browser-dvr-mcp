@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Adversarial Web Agent Testbed</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #fafafa;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.5em; border-bottom: 2px solid #333; padding-bottom: 8px; }
+    h2 { font-size: 1.2em; color: #444; margin-top: 40px; }
+    h3 { font-size: 1em; color: #555; }
+    .hurdle-section {
+      margin: 20px 0;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .hurdle-label {
+      font-size: 0.75em;
+      font-weight: bold;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 10px;
+    }
+    .success-flag {
+      color: #0f9d58;
+      font-weight: bold;
+      margin-top: 10px;
+      padding: 8px;
+      border: 1px solid #0f9d58;
+      background: #e6f4ea;
+      border-radius: 4px;
+    }
+
+    /* ── Hurdle 3.2: Honeypot CSS ────────────────────────────────── */
+    .secure-form-container {
+      max-width: 400px;
+      padding: 20px;
+      border: 1px solid #ccc;
+      background: #f9f9f9;
+      border-radius: 8px;
+    }
+    .form-group { margin-bottom: 15px; }
+    .form-group label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+      color: #333;
+    }
+    .form-group input {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .honey-pot-layer {
+      position: absolute;
+      top: 0;
+      left: -9999px;
+      opacity: 0;
+      height: 0;
+      width: 0;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    /* ── Hurdle 2.4: Virtual Scroll ──────────────────────────────── */
+    #viewport-container {
+      height: 250px;
+      width: 100%;
+      max-width: 500px;
+      overflow-y: scroll;
+      border: 2px solid #333;
+      position: relative;
+      background: #fafafa;
+    }
+    .virtual-item {
+      height: 80px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 20px;
+      border-bottom: 1px solid #ddd;
+      box-sizing: border-box;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Adversarial Web Agent Testbed</h1>
+  <p>This page implements 8 adversarial hurdles designed to stress-test browser automation primitives.</p>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CATEGORY 1: STRUCTURAL & ENCAPSULATION HURDLES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <h2>Category 1: Structural &amp; Encapsulation Hurdles</h2>
+
+  <!-- ── Hurdle 1.1: Deeply Nested Closed Shadow DOM ─────────────────────── -->
+  <div class="hurdle-section" id="hurdle-1-1">
+    <div class="hurdle-label">Hurdle 1.1 — Closed Shadow DOM</div>
+    <p>A button is hidden inside two levels of closed shadow DOM. Standard DOM queries cannot reach it.</p>
+    <div id="defense-perimeter-alpha" aria-label="Outer Security Perimeter"></div>
+  </div>
+
+  <script>
+    (function() {
+      // Level 1: Outer Closed Shadow Encapsulation
+      const outerHost = document.getElementById('defense-perimeter-alpha');
+      const outerShadow = outerHost.attachShadow({ mode: 'closed' });
+
+      const wrapper = document.createElement('div');
+      wrapper.style.padding = '20px';
+      wrapper.style.backgroundColor = '#f8f9fa';
+      wrapper.style.border = '2px solid #ced4da';
+      wrapper.innerHTML = `<h3 style="font-family: monospace; margin-top: 0;">Layer 1 Encapsulation Active</h3>
+                           <p>Standard XPath traversal is now ineffective.</p>
+                           <div id="defense-perimeter-beta"></div>`;
+      outerShadow.appendChild(wrapper);
+
+      // Level 2: Inner Closed Shadow Encapsulation
+      const innerHost = wrapper.querySelector('#defense-perimeter-beta');
+      const innerShadow = innerHost.attachShadow({ mode: 'closed' });
+
+      const targetButton = document.createElement('button');
+      targetButton.id = 'btn-secure-shadow';
+      targetButton.textContent = 'Acknowledge Secure Directive';
+      targetButton.style.padding = '12px 24px';
+      targetButton.style.backgroundColor = '#1a73e8';
+      targetButton.style.color = 'white';
+      targetButton.style.border = 'none';
+      targetButton.style.cursor = 'pointer';
+      targetButton.style.borderRadius = '4px';
+      targetButton.style.fontSize = '14px';
+
+      targetButton.addEventListener('click', () => {
+        const successFlag = document.createElement('div');
+        successFlag.id = 'shadow-success-flag';
+        successFlag.className = 'success-flag';
+        successFlag.textContent = 'Directive Acknowledged: Shadow Boundary Penetrated';
+        document.getElementById('hurdle-1-1').appendChild(successFlag);
+      });
+
+      innerShadow.appendChild(targetButton);
+
+      // Expose shadow refs on a global for test harness (NOT accessible to agents)
+      window.__testHarness = window.__testHarness || {};
+      window.__testHarness.shadowRefs = { outerShadow, innerShadow };
+    })();
+  </script>
+
+
+  <!-- ── Hurdle 1.2: Cross-Origin Data URL Iframes ───────────────────────── -->
+  <div class="hurdle-section" id="hurdle-1-2">
+    <div class="hurdle-label">Hurdle 1.2 — Data-URL Iframe</div>
+    <p>A button lives inside a data: URL iframe with an opaque origin. Parent DOM access is blocked by SOP.</p>
+    <div id="iframe-containment-zone"></div>
+  </div>
+
+  <script>
+    (function() {
+      const container = document.getElementById('iframe-containment-zone');
+      const iframe = document.createElement('iframe');
+
+      const nestedHtml = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <style>
+              body { font-family: sans-serif; text-align: center; padding: 20px; background: #fff3cd; margin: 0; }
+              button { background: #d39e00; color: white; border: none; padding: 10px 20px; cursor: pointer; border-radius: 4px; font-size: 14px; }
+            </style>
+          </head>
+          <body>
+            <h4 style="margin-top: 0;">Opaque Origin Context (Data URL)</h4>
+            <p>This frame rejects parent DOM access.</p>
+            <button id="isolated-btn" onclick="parent.postMessage('iframe-transaction-complete', '*')">
+              Authorize Transaction
+            </button>
+          </body>
+        </html>
+      `;
+
+      const encodedHtml = btoa(unescape(encodeURIComponent(nestedHtml)));
+      iframe.src = `data:text/html;base64,${encodedHtml}`;
+      iframe.style.width = '400px';
+      iframe.style.height = '200px';
+      iframe.style.border = '2px dashed #d9534f';
+      iframe.id = 'data-url-iframe';
+
+      container.appendChild(iframe);
+
+      // Listener in parent to verify agent interaction
+      window.addEventListener('message', (event) => {
+        if (event.data === 'iframe-transaction-complete') {
+          const flag = document.createElement('div');
+          flag.id = 'iframe-success-flag';
+          flag.className = 'success-flag';
+          flag.textContent = 'Cross-Origin Transaction Authorized Successfully';
+          container.appendChild(flag);
+        }
+      });
+    })();
+  </script>
+
+
+  <!-- ── Hurdle 1.3: Dynamic and Randomized CSS Class Names ──────────────── -->
+  <div class="hurdle-section" id="hurdle-1-3">
+    <div class="hurdle-label">Hurdle 1.3 — Randomized CSS Classes</div>
+    <p>Class names are randomly generated on every page load. Selectors based on class names will break.</p>
+    <style id="dynamic-styles"></style>
+    <div id="obfuscation-container"></div>
+  </div>
+
+  <script>
+    (function() {
+      function generateHash() {
+        return Math.random().toString(36).substring(2, 8);
+      }
+
+      const containerClass = 'css-' + generateHash();
+      const buttonClass = 'css-' + generateHash();
+      const textClass = 'css-' + generateHash();
+
+      const styleSheet = document.getElementById('dynamic-styles');
+      styleSheet.innerHTML = `
+        .${containerClass} { border: 1px solid #333; padding: 20px; max-width: 300px; border-radius: 4px; }
+        .${textClass} { font-size: 14px; color: #555; margin-bottom: 15px; }
+        .${buttonClass} { background-color: #000; color: #fff; padding: 10px 15px; border-radius: 4px; border: none; cursor: pointer; }
+      `;
+
+      const container = document.getElementById('obfuscation-container');
+      container.innerHTML = `
+        <div class="${containerClass}">
+          <p class="${textClass}">System settings have been updated.</p>
+          <button class="${buttonClass}" data-testid="dynamic-action-btn">Confirm Changes</button>
+        </div>
+      `;
+
+      container.querySelector('[data-testid="dynamic-action-btn"]').addEventListener('click', () => {
+        const flag = document.createElement('div');
+        flag.id = 'dynamic-css-success';
+        flag.className = 'success-flag';
+        flag.textContent = 'Changes Confirmed via Stable Locator';
+        document.getElementById('hurdle-1-3').appendChild(flag);
+      });
+    })();
+  </script>
+
+
+  <!-- ── Hurdle 1.4: Canvas-Driven Opaque Interfaces ─────────────────────── -->
+  <div class="hurdle-section" id="hurdle-1-4">
+    <div class="hurdle-label">Hurdle 1.4 — Canvas Interface</div>
+    <p>Interactive elements are rendered inside a canvas. The DOM contains only a single &lt;canvas&gt; tag with no children.</p>
+    <canvas id="adversarial-canvas" width="500" height="250" style="border:1px solid #000; border-radius: 4px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: block;"></canvas>
+  </div>
+
+  <script>
+    (function() {
+      const canvas = document.getElementById('adversarial-canvas');
+      const ctx = canvas.getContext('2d');
+
+      // Simulated interactive nodes within the canvas
+      const nodes = [
+        { x: 100, y: 125, r: 35, color: '#4285F4', text: 'Info' },
+        { x: 250, y: 125, r: 35, color: '#FBBC05', text: 'Warn' },
+        { x: 400, y: 125, r: 35, color: '#34A853', text: 'Target' }
+      ];
+
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#f8f9fa";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Draw connecting lines
+        ctx.beginPath();
+        ctx.moveTo(nodes[0].x, nodes[0].y);
+        ctx.lineTo(nodes[1].x, nodes[1].y);
+        ctx.lineTo(nodes[2].x, nodes[2].y);
+        ctx.strokeStyle = '#9aa0a6';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Draw nodes
+        nodes.forEach(node => {
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
+          ctx.fillStyle = node.color;
+          ctx.fill();
+          ctx.strokeStyle = '#202124';
+          ctx.stroke();
+
+          ctx.fillStyle = "#ffffff";
+          ctx.font = "14px Arial";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(node.text, node.x, node.y);
+        });
+      }
+      draw();
+
+      // Expose node metadata for tests to derive coordinates dynamically
+      window.__testHarness = window.__testHarness || {};
+      window.__testHarness.canvasNodes = nodes;
+
+      // Custom event listener for pixel-perfect hit detection
+      canvas.addEventListener('click', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+
+        // Check distance to the "Target" node (Node C, index 2)
+        const targetNode = nodes[2];
+        const dist = Math.sqrt(Math.pow(clickX - targetNode.x, 2) + Math.pow(clickY - targetNode.y, 2));
+
+        if (dist <= targetNode.r) {
+          targetNode.color = "#0f9d58";
+          targetNode.text = "Active";
+          draw();
+
+          const flag = document.createElement('div');
+          flag.id = 'canvas-success-flag';
+          flag.className = 'success-flag';
+          flag.textContent = 'Canvas Node Targeted Successfully';
+          document.getElementById('hurdle-1-4').appendChild(flag);
+        }
+      });
+    })();
+  </script>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CATEGORY 2: STATE, TIMING & FRAMEWORK HURDLES
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <h2>Category 2: State, Timing &amp; Framework Hurdles</h2>
+
+  <!-- ── Hurdle 2.1: Delayed Progressive Hydration ───────────────────────── -->
+  <div class="hurdle-section" id="hurdle-2-1">
+    <div class="hurdle-label">Hurdle 2.1 — Delayed Hydration</div>
+    <p style="color: #666; font-size: 0.9em;">Button appears interactive immediately but event listeners attach after a delay.</p>
+
+    <div id="hydration-container">
+      <button id="hydrate-submit-btn" style="background: #1A73E8; color: #fff; border: none; border-radius: 4px; padding: 10px 20px; font-weight: bold; cursor: pointer; font-size: 14px;">
+        Save Configuration
+      </button>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const btn = document.getElementById('hydrate-submit-btn');
+      const container = document.getElementById('hydration-container');
+      let isHydrated = false;
+
+      // Simulating a 2000ms delay before the main thread completes hydration
+      setTimeout(() => {
+        isHydrated = true;
+        // Subtle visual indicator
+        btn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+        btn.setAttribute('data-hydrated', 'true');
+
+        btn.addEventListener('click', function(e) {
+          e.preventDefault();
+          const successMsg = document.createElement('div');
+          successMsg.id = 'hydration-success-flag';
+          successMsg.className = 'success-flag';
+          successMsg.textContent = 'Configuration Saved Successfully. Hydration complete.';
+          document.getElementById('hurdle-2-1').appendChild(successMsg);
+        });
+
+      }, 2000);
+
+      // Trap for early clicks
+      btn.addEventListener('click', function(e) {
+        if (!isHydrated) {
+          console.warn("Click intercepted: Component not yet hydrated.");
+          // The click is swallowed, no UI change occurs
+        }
+      });
+    })();
+  </script>
+
+
+  <!-- ── Hurdle 2.2: Virtual DOM Stale References ────────────────────────── -->
+  <div class="hurdle-section" id="hurdle-2-2">
+    <div class="hurdle-label">Hurdle 2.2 — Stale DOM References</div>
+    <p>This button is destroyed and recreated every 800ms, simulating aggressive VDOM reconciliation.</p>
+
+    <div id="stale-container"></div>
+  </div>
+
+  <script>
+    (function() {
+      const container = document.getElementById('stale-container');
+      let clickCount = 0;
+      let intervalId;
+
+      function renderComponent() {
+        container.innerHTML = '<p style="margin-bottom: 10px; color: #666; font-size: 0.9em;">Connecting to socket...</p>';
+
+        const btn = document.createElement('button');
+        btn.id = 'ephemeral-btn';
+        btn.textContent = `Sync Data (Cycles: ${clickCount})`;
+        btn.style.padding = '8px 16px';
+        btn.style.backgroundColor = '#4285F4';
+        btn.style.color = 'white';
+        btn.style.border = 'none';
+        btn.style.cursor = 'pointer';
+        btn.style.borderRadius = '4px';
+
+        btn.addEventListener('click', () => {
+          clickCount++;
+          clearInterval(intervalId); // Stop re-rendering on success
+          const flag = document.createElement('div');
+          flag.id = 'stale-success-flag';
+          flag.className = 'success-flag';
+          flag.textContent = 'Stale Click Avoided: Atomic Execution Achieved';
+          document.getElementById('hurdle-2-2').appendChild(flag);
+        });
+
+        container.appendChild(btn);
+      }
+
+      renderComponent();
+
+      // Aggressively re-render every 800ms
+      intervalId = setInterval(() => {
+        renderComponent();
+      }, 800);
+    })();
+  </script>
+
+
+  <!-- ── Hurdle 2.3: Client-Side SPA Routing ─────────────────────────────── -->
+  <div class="hurdle-section" id="hurdle-2-3">
+    <div class="hurdle-label">Hurdle 2.3 — SPA Client-Side Routing</div>
+    <p>Clicking the link triggers pushState routing with no page reload. Content loads after a 1500ms delay.</p>
+
+    <nav>
+      <a href="/dashboard" id="spa-link" style="color: blue; text-decoration: underline; cursor: pointer;">Go to Dashboard</a>
+    </nav>
+
+    <div id="router-outlet" style="margin-top: 15px; padding: 15px; background: #eee; border-radius: 4px;">
+      <p>Current View: Home</p>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const link = document.getElementById('spa-link');
+      const outlet = document.getElementById('router-outlet');
+
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+
+        // Update URL without reloading (may fail on file:// protocol)
+        try { window.history.pushState({}, '', '/dashboard'); } catch (err) { /* file:// SecurityError */ }
+
+        outlet.innerHTML = '<p>Loading payload...</p>';
+
+        // Simulate network latency for the JSON payload
+        setTimeout(() => {
+          outlet.innerHTML = `
+            <h4 style="margin-top: 0;">Dashboard View</h4>
+            <p>Welcome to the secure dashboard.</p>
+            <button id="spa-success-btn" style="padding: 8px 16px; background: #34A853; color: white; border: none; border-radius: 4px; cursor: pointer;">Acknowledge Routing</button>
+          `;
+
+          document.getElementById('spa-success-btn').addEventListener('click', () => {
+            const flag = document.createElement('div');
+            flag.id = 'spa-success-flag';
+            flag.className = 'success-flag';
+            flag.textContent = 'SPA Routing Acknowledged';
+            document.getElementById('hurdle-2-3').appendChild(flag);
+          });
+        }, 1500);
+      });
+    })();
+  </script>
+
+
+  <!-- ── Hurdle 2.4: Virtualized Infinite Scroll ─────────────────────────── -->
+  <div class="hurdle-section" id="hurdle-2-4">
+    <div class="hurdle-label">Hurdle 2.4 — Virtual Scroll</div>
+    <p style="font-size: 0.9em; color: #555;">Find and select Dataset Item #45. Nodes outside the viewport are destroyed.</p>
+
+    <div id="viewport-container">
+      <div id="scroll-anchor" style="height: 80000px; position: absolute; width: 1px; z-index: -1;"></div>
+      <div id="item-renderer"></div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const container = document.getElementById('viewport-container');
+      const renderer = document.getElementById('item-renderer');
+      const itemHeight = 80;
+      const totalItems = 1000;
+
+      function updateDOM() {
+        const scrollTop = container.scrollTop;
+        const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - 1);
+        const endIndex = Math.min(totalItems - 1, Math.ceil((scrollTop + 250) / itemHeight) + 1);
+
+        renderer.innerHTML = '';
+
+        for (let i = startIndex; i <= endIndex; i++) {
+          const item = document.createElement('div');
+          item.className = 'virtual-item';
+          item.style.position = 'absolute';
+          item.style.top = `${i * itemHeight}px`;
+          item.style.width = '100%';
+
+          item.innerHTML = `
+            <span style="font-family: monospace; font-weight: bold;">Dataset Item #${i}</span>
+            <button class="virtual-select-btn" data-id="${i}" style="padding: 5px 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; border-radius: 3px;">Select</button>
+          `;
+          renderer.appendChild(item);
+        }
+
+        // Re-attach listeners to newly created buttons
+        document.querySelectorAll('.virtual-select-btn').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            const id = e.target.getAttribute('data-id');
+            if (id === '45') {
+              const flag = document.createElement('div');
+              flag.id = 'virtual-scroll-success';
+              flag.className = 'success-flag';
+              flag.textContent = 'Target Item #45 Located and Selected';
+              document.getElementById('hurdle-2-4').appendChild(flag);
+            }
+          });
+        });
+      }
+
+      container.addEventListener('scroll', () => {
+        window.requestAnimationFrame(updateDOM);
+      });
+
+      updateDOM();
+    })();
+  </script>
+
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CATEGORY 3: INTERRUPTION & OVERLAYS
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <h2>Category 3: Interruption &amp; Overlays</h2>
+
+  <!-- ── Hurdle 3.1: Z-Index Modal Popup ─────────────────────────────────── -->
+  <div class="hurdle-section" id="hurdle-3-1">
+    <div class="hurdle-label">Hurdle 3.1 — Modal Overlay</div>
+    <p>A blocking modal appears after 1500ms. The primary objective button is underneath.</p>
+
+    <div id="target-background-content">
+      <button id="primary-objective" style="margin-top: 10px; padding: 10px 20px; background: #34A853; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">Execute Objective</button>
+    </div>
+  </div>
+
+  <!-- The modal (initially hidden, triggered by timer) -->
+  <div id="interruption-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 9999; justify-content: center; align-items: center; backdrop-filter: blur(5px);">
+    <div style="background: white; padding: 40px; max-width: 400px; text-align: center; border-radius: 8px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+      <h2 style="margin-top: 0;">Privacy Compliance Required</h2>
+      <p>Before proceeding, you must accept our updated tracking policies.</p>
+      <button id="accept-modal-btn" style="background: #1A73E8; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px;">Accept All &amp; Continue</button>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const modal = document.getElementById('interruption-modal');
+      const acceptBtn = document.getElementById('accept-modal-btn');
+      const primaryObj = document.getElementById('primary-objective');
+
+      // Trigger modal after 1500ms
+      setTimeout(() => {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+        document.body.style.paddingRight = '15px';
+      }, 1500);
+
+      acceptBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+        document.body.style.overflow = 'auto';
+        document.body.style.paddingRight = '0px';
+      });
+
+      primaryObj.addEventListener('click', () => {
+        const flag = document.createElement('div');
+        flag.id = 'modal-success-flag';
+        flag.className = 'success-flag';
+        flag.textContent = 'Primary Objective Executed Successfully';
+        document.getElementById('hurdle-3-1').appendChild(flag);
+      });
+    })();
+  </script>
+
+
+  <!-- ── Hurdle 3.2: Honeypot Fields ─────────────────────────────────────── -->
+  <div class="hurdle-section" id="hurdle-3-2">
+    <div class="hurdle-label">Hurdle 3.2 — Honeypot Form</div>
+    <p>A registration form containing a visually hidden honeypot field. Filling it triggers bot detection.</p>
+
+    <div class="secure-form-container">
+      <form id="adversarial-form">
+        <div class="form-group">
+          <label for="username">Account Username</label>
+          <input type="text" id="username" name="username" required />
+        </div>
+
+        <!-- HONEYPOT: visually hidden, semantically attractive -->
+        <div class="form-group honey-pot-layer" aria-hidden="true">
+          <label for="phone_backup">Backup Phone Number (Internal Use Only)</label>
+          <input type="text" id="phone_backup" name="phone_backup" autocomplete="off" tabindex="-1" />
+        </div>
+
+        <div class="form-group">
+          <label for="password">Secure Password</label>
+          <input type="password" id="password" name="password" required />
+        </div>
+
+        <button type="submit" id="submit-registration" style="background: #000; color: #fff; padding: 10px 20px; width: 100%; border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">
+          Register Account
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const form = document.getElementById('adversarial-form');
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+
+        const honeypotValue = document.getElementById('phone_backup').value;
+
+        if (honeypotValue && honeypotValue.length > 0) {
+          // Trap triggered
+          const container = document.getElementById('hurdle-3-2');
+          const errorDiv = document.createElement('div');
+          errorDiv.id = 'honeypot-trap-flag';
+          errorDiv.style.color = '#D93025';
+          errorDiv.style.padding = '15px';
+          errorDiv.style.marginTop = '15px';
+          errorDiv.style.border = '1px solid #D93025';
+          errorDiv.style.backgroundColor = '#fce8e6';
+          errorDiv.style.borderRadius = '4px';
+          errorDiv.innerHTML = '<strong>403 FORBIDDEN:</strong> Automated Bot Detected. Honeypot field was filled.';
+          container.appendChild(errorDiv);
+        } else {
+          // Success
+          const flag = document.createElement('div');
+          flag.id = 'honeypot-success-flag';
+          flag.className = 'success-flag';
+          flag.innerHTML = '<strong>Registration Successful.</strong> Human interaction pattern verified.';
+          document.getElementById('hurdle-3-2').appendChild(flag);
+        }
+      });
+    })();
+  </script>
+
+</body>
+</html>
