@@ -8,7 +8,8 @@ import type { WorkerBridge } from '../workers/workerBridge.js';
 import ffmpegPath from 'ffmpeg-static';
 import { execFileSync } from 'child_process';
 import { writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, isAbsolute } from 'path';
+import os from 'os';
 
 export class ScreencastManager {
   private active = false;
@@ -102,7 +103,13 @@ export class ScreencastManager {
       throw new Error('A recording is already in progress.');
     }
 
-    this.recordingOutputDir = outputDir || join(process.cwd(), 'recordings', `rec_${Date.now()}`);
+    let baseDir = process.cwd();
+    if (baseDir === '/' || baseDir === '\\') {
+      baseDir = join(os.homedir(), '.best-browser-mcp');
+    }
+    this.recordingOutputDir = outputDir
+      ? (isAbsolute(outputDir) ? outputDir : resolve(baseDir, outputDir))
+      : join(baseDir, 'recordings', `rec_${Date.now()}`);
     mkdirSync(this.recordingOutputDir, { recursive: true });
 
     this.recordingFrames = [];

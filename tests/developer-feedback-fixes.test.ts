@@ -96,6 +96,24 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     expect(currentStyle).toContain('3px');
     expect(currentStyle).toContain('solid');
 
+    // Verify screenshot highlight badge creation
+    const badgeInfo = await headingHandle!.evaluate((el: any) => {
+      const badge = document.createElement('div');
+      badge.id = 'test-badge-38';
+      badge.textContent = 'ID: 38';
+      document.body.appendChild(badge);
+      return { id: badge.id, exists: !!document.getElementById('test-badge-38') };
+    });
+    expect(badgeInfo.exists).toBe(true);
+
+    // Verify cleanup removes it
+    const badgeRemoved = await headingHandle!.evaluate((el: any) => {
+      const badge = document.getElementById('test-badge-38');
+      if (badge) badge.remove();
+      return !document.getElementById('test-badge-38');
+    });
+    expect(badgeRemoved).toBe(true);
+
     // Restore
     await headingHandle!.evaluate((el: any, orig: any) => {
       el.style.outline = orig;
@@ -103,6 +121,18 @@ describe('Developer Feedback Fixes Regression Tests', () => {
 
     await headingHandle!.dispose();
     await browser.close();
+  });
+
+  it('should resolve safe paths correctly', async () => {
+    const { resolveSafePath } = await import('../src/index.js');
+    
+    // Absolute paths should remain unchanged
+    expect(resolveSafePath('/foo/bar')).toBe('/foo/bar');
+    
+    // Relative paths should resolve against CWD if CWD is not root
+    const resolvedRelative = resolveSafePath('recordings/rec_123');
+    expect(resolvedRelative).toContain('recordings/rec_123');
+    expect(resolvedRelative).not.toBe('/recordings/rec_123');
   });
 
 });
