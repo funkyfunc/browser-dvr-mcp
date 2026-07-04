@@ -303,7 +303,8 @@ export async function resolveAndValidateSpatialCoordinate(
   backendNodeId: number,
   timeoutMs: number = 2000,
   frame?: Frame,
-  offset?: [number, number]
+  offset?: [number, number],
+  force?: boolean
 ): Promise<{ valid: boolean; coordinates?: { x: number; y: number }; error?: string }> {
   const startTime = Date.now();
   let lastError = 'Unknown error';
@@ -315,6 +316,10 @@ export async function resolveAndValidateSpatialCoordinate(
       if (offset) {
         x += offset[0];
         y += offset[1];
+      }
+
+      if (force) {
+        return { valid: true, coordinates: { x, y } };
       }
 
       // Check occlusion

@@ -244,9 +244,10 @@ server.registerTool(
       dragToCoordinate: z.array(z.number()).length(2).optional().describe('Raw [x, y] pixel coordinates to drag to (required for action="drag_and_drop" if dragToBackendNodeId is not provided).'),
       frameIndex: z.number().optional().describe('Target frame index (optional, defaults to automatic detection if backendNodeId is used).'),
       offset: z.array(z.number()).length(2).optional().describe('Relative [dx, dy] offset from the element center in pixels. Use when center is clipped or covered.'),
+      force: z.boolean().optional().describe('If true, bypass spatial occlusion validation and force interaction at the element center (default: false).'),
     },
   },
-  async ({ action, backendNodeId, coordinate, text, key, clearFirst, direction, amount, timeoutMs, dragToBackendNodeId, dragToCoordinate, frameIndex, offset }) => {
+  async ({ action, backendNodeId, coordinate, text, key, clearFirst, direction, amount, timeoutMs, dragToBackendNodeId, dragToCoordinate, frameIndex, offset, force }) => {
     const { page, cdp } = requireSession();
     const tel = requireTelemetry();
 
@@ -328,7 +329,7 @@ server.registerTool(
         if (coordinate) {
           result = await coordinateClick(page, targetCdp, coordinate[0], coordinate[1], tel);
         } else if (backendNodeId !== undefined) {
-          result = await atomicClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
+          result = await atomicClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
         } else {
           throw new Error('click requires either backendNodeId or coordinate.');
         }
@@ -336,7 +337,7 @@ server.registerTool(
 
       case 'dblclick':
         if (backendNodeId !== undefined) {
-          result = await atomicDoubleClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
+          result = await atomicDoubleClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
         } else {
           throw new Error('dblclick requires backendNodeId.');
         }
@@ -345,7 +346,7 @@ server.registerTool(
       case 'type':
         if (!text) throw new Error('type action requires the "text" parameter.');
         if (backendNodeId !== undefined) {
-          result = await atomicType(page, targetCdp, backendNodeId, text, tel, { clearFirst, timeoutMs, offset: offset as [number, number], frame: targetFrame });
+          result = await atomicType(page, targetCdp, backendNodeId, text, tel, { clearFirst, timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
         } else if (coordinate) {
           // Click coordinate first, then type
           await coordinateClick(page, targetCdp, coordinate[0], coordinate[1], tel);
@@ -359,7 +360,7 @@ server.registerTool(
 
       case 'clear':
         if (backendNodeId !== undefined) {
-          result = await atomicClear(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
+          result = await atomicClear(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
         } else {
           throw new Error('clear requires backendNodeId.');
         }
@@ -367,7 +368,7 @@ server.registerTool(
 
       case 'hover':
         if (backendNodeId !== undefined) {
-          result = await atomicHover(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
+          result = await atomicHover(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
         } else if (coordinate) {
           await targetCdp.send('Input.dispatchMouseEvent', {
             type: 'mouseMoved', x: Math.round(coordinate[0]), y: Math.round(coordinate[1]),
@@ -394,7 +395,7 @@ server.registerTool(
         if (coordinate) {
           startPt = { x: coordinate[0], y: coordinate[1] };
         } else if (backendNodeId !== undefined) {
-          const validation = await resolveAndValidateSpatialCoordinate(page, targetCdp, backendNodeId, timeoutMs || 2000, targetFrame, offset as [number, number]);
+          const validation = await resolveAndValidateSpatialCoordinate(page, targetCdp, backendNodeId, timeoutMs || 2000, targetFrame, offset as [number, number], force);
           if (!validation.valid || !validation.coordinates) {
             result = {
               success: false,
@@ -1370,15 +1371,23 @@ server.registerTool(
   'browser_intercept_request',
   {
     description:
-      'Intercept matching network requests to inject delays or force failures. ' +
+      'Intercept matching network requests to inject delays, force failures, or return mock responses. ' +
       'Uses CDP Fetch domain for precise request-level control.',
     inputSchema: {
       pattern: z.string().describe('URL glob pattern to match (e.g., "*api*", "*graphql*")'),
-      action: z.enum(['delay', 'fail']).describe('"delay" = add latency, "fail" = reject the request'),
+      action: z.enum(['delay', 'fail', 'mock']).describe('"delay" = add latency, "fail" = reject the request, "mock" = inject custom mock response'),
       delayMs: z.number().optional().describe('Delay in ms (required for action="delay")'),
+      mockResponse: z.object({
+        status: z.number().describe('HTTP status code (e.g. 200)'),
+        headers: z.array(z.object({
+          name: z.string(),
+          value: z.string(),
+        })).optional().describe('HTTP response headers'),
+        body: z.string().describe('Response body string'),
+      }).optional().describe('Mock response configuration (required for action="mock")'),
     },
   },
-  async ({ pattern, action, delayMs }) => {
+  async ({ pattern, action, delayMs, mockResponse }) => {
     const { cdp } = requireSession();
 
     if (fetchInterceptHandler) {
@@ -1395,6 +1404,15 @@ server.registerTool(
         setTimeout(async () => {
           await cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
         }, delayMs);
+      } else if (action === 'mock' && mockResponse) {
+        const base64Body = Buffer.from(mockResponse.body).toString('base64');
+        const headers = mockResponse.headers || [];
+        await cdp.send('Fetch.fulfillRequest', {
+          requestId: event.requestId,
+          responseCode: mockResponse.status,
+          responseHeaders: headers,
+          body: base64Body,
+        }).catch(() => {});
       } else {
         await cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
       }

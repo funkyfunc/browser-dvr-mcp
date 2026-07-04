@@ -32,7 +32,7 @@ export async function atomicClick(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -41,7 +41,8 @@ export async function atomicClick(
     backendNodeId,
     options.timeoutMs || 2000,
     options.frame,
-    options.offset
+    options.offset,
+    options.force
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -152,7 +153,7 @@ export async function atomicDoubleClick(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -161,7 +162,8 @@ export async function atomicDoubleClick(
     backendNodeId,
     options.timeoutMs || 2000,
     options.frame,
-    options.offset
+    options.offset,
+    options.force
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -231,7 +233,7 @@ export async function atomicType(
   backendNodeId: number,
   text: string,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; clearFirst?: boolean; offset?: [number, number]; frame?: Frame } = {}
+  options: { timeoutMs?: number; clearFirst?: boolean; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -240,7 +242,8 @@ export async function atomicType(
     backendNodeId,
     options.timeoutMs || 2000,
     options.frame,
-    options.offset
+    options.offset,
+    options.force
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -305,7 +308,7 @@ export async function atomicClear(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -314,7 +317,8 @@ export async function atomicClear(
     backendNodeId,
     options.timeoutMs || 2000,
     options.frame,
-    options.offset
+    options.offset,
+    options.force
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -375,7 +379,7 @@ export async function atomicHover(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -384,7 +388,8 @@ export async function atomicHover(
     backendNodeId,
     options.timeoutMs || 2000,
     options.frame,
-    options.offset
+    options.offset,
+    options.force
   );
 
   if (!validation.valid || !validation.coordinates) {

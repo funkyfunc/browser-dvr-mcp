@@ -135,4 +135,90 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     expect(resolvedRelative).not.toBe('/recordings/rec_123');
   });
 
+  it('should bypass spatial validation when force is true', async () => {
+    const { resolveAndValidateSpatialCoordinate } = await import('../src/layer1/spatialValidation.js');
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+    });
+    const page = await browser.newPage();
+    await page.setContent(`
+      <div style="position: relative; width: 100px; height: 100px;">
+        <button id="target" style="width: 100px; height: 100px;">Target</button>
+        <div id="occluder" style="position: absolute; top: 0; left: 0; width: 100px; height: 100px; background: rgba(0,0,0,0.5);">Occluder</div>
+      </div>
+    `);
+    
+    const cdp = await page.createCDPSession();
+    await cdp.send('DOM.enable');
+
+    const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
+    let targetBackendNodeId: number | null = null;
+    const findTarget = (node: any) => {
+      if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('target')) {
+        targetBackendNodeId = node.backendNodeId;
+        return;
+      }
+      if (node.children) {
+        for (const c of node.children) findTarget(c);
+      }
+    };
+    findTarget(doc.root);
+    expect(targetBackendNodeId).not.toBeNull();
+
+    // Normal validation should fail due to occlusion
+    const normalVal = await resolveAndValidateSpatialCoordinate(page, cdp, targetBackendNodeId!, 500);
+    expect(normalVal.valid).toBe(false);
+    expect(normalVal.error).toContain('Spatial validation failed');
+
+    // Force validation should succeed and return coordinates
+    const forceVal = await resolveAndValidateSpatialCoordinate(page, cdp, targetBackendNodeId!, 500, undefined, undefined, true);
+    expect(forceVal.valid).toBe(true);
+    expect(forceVal.coordinates).toBeDefined();
+
+    await browser.close();
+  });
+
+  it('should intercept request and return mock response', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+      args: ['--disable-web-security'],
+    });
+    const page = await browser.newPage();
+    const cdp = await page.createCDPSession();
+
+    // Enable Fetch interception for everything
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*' }] });
+
+    cdp.on('Fetch.requestPaused', async (event: any) => {
+      const mockResponse = {
+        status: 200,
+        headers: [{ name: 'content-type', value: 'application/json' }],
+        body: JSON.stringify({ success: true, mocked: 'yes' }),
+      };
+      const base64Body = Buffer.from(mockResponse.body).toString('base64');
+      await cdp.send('Fetch.fulfillRequest', {
+        requestId: event.requestId,
+        responseCode: mockResponse.status,
+        responseHeaders: mockResponse.headers,
+        body: base64Body,
+      });
+    });
+
+    // Make request inside page and check response
+    const result = await page.evaluate(async () => {
+      const resp = await fetch('http://localhost/test-api');
+      const data = await resp.json();
+      return { status: resp.status, contentType: resp.headers.get('content-type'), data };
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.contentType).toBe('application/json');
+    expect(result.data).toEqual({ success: true, mocked: 'yes' });
+
+    await cdp.send('Fetch.disable');
+    await browser.close();
+  });
+
 });
