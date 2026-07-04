@@ -42,7 +42,12 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-function serializeAXTreeToMarkdown(nodes: AXNodeInput[], semanticOnly: boolean, targetBackendNodeId?: number): string {
+function serializeAXTreeToMarkdown(
+  nodes: AXNodeInput[],
+  semanticOnly: boolean,
+  targetBackendNodeId?: number,
+  renderedNodeIds?: Set<number>
+): string {
   if (!nodes || nodes.length === 0) return '*(Empty accessibility tree)*';
 
   // Build tree structure
@@ -143,6 +148,9 @@ function serializeAXTreeToMarkdown(nodes: AXNodeInput[], semanticOnly: boolean, 
       // Stable backend node ID for interaction targeting
       if (node.backendDOMNodeId !== undefined) {
         props.push(`id: ${node.backendDOMNodeId}`);
+        if (renderedNodeIds) {
+          renderedNodeIds.add(node.backendDOMNodeId);
+        }
       }
 
       if (props.length > 0) nodeStr += ` [${props.join(', ')}]`;
@@ -160,6 +168,113 @@ function serializeAXTreeToMarkdown(nodes: AXNodeInput[], semanticOnly: boolean, 
 }
 
 // ─── Main Entry Point ──────────────────────────────────────────────────────
+
+interface PrunedElement {
+  backendNodeId: number;
+  tag: string;
+  id: string;
+  className: string;
+  cursor: string;
+  text: string;
+}
+
+/**
+ * Identify and collect visible interactive elements pruned from the AX tree.
+ */
+async function sniffPrunedInteractiveElements(
+  _page: Page,
+  frame: any,
+  cdpSession: CDPSession,
+  renderedNodeIds: Set<number>
+): Promise<PrunedElement[]> {
+  const prunedElements: PrunedElement[] = [];
+  try {
+    await cdpSession.send('DOM.enable');
+
+    // Mark candidate interactive elements in page JS context
+    await frame.evaluate(() => {
+      const candidates = Array.from(document.querySelectorAll('*')).filter(el => {
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+
+        const style = window.getComputedStyle(el);
+        const cursor = style.cursor;
+        const isInteractiveCursor = [
+          'pointer', 'grab', 'grabbing', 'move', 'col-resize', 'row-resize',
+          'nesw-resize', 'nwse-resize', 'nw-resize', 'ne-resize', 'se-resize', 'sw-resize'
+        ].includes(cursor);
+
+        const hasInlineHandler = el.hasAttribute('onclick') ||
+                                 el.hasAttribute('onmousedown') ||
+                                 el.hasAttribute('onmouseup') ||
+                                 el.hasAttribute('onpointerdown');
+
+        const classes = el.className && typeof el.className === 'string' ? el.className.toLowerCase() : '';
+        const id = el.id ? el.id.toLowerCase() : '';
+        const hasInteractiveName = classes.includes('btn') ||
+                                   classes.includes('button') ||
+                                   classes.includes('handle') ||
+                                   classes.includes('resize') ||
+                                   classes.includes('clickable') ||
+                                   id.includes('btn') ||
+                                   id.includes('button') ||
+                                   id.includes('handle') ||
+                                   id.includes('resize') ||
+                                   id.includes('clickable');
+
+        const tag = el.tagName.toLowerCase();
+        const isStandardSemantic = ['button', 'a', 'input', 'select', 'textarea'].includes(tag);
+
+        return isInteractiveCursor || hasInlineHandler || (hasInteractiveName && !isStandardSemantic);
+      });
+
+      candidates.forEach((el, index) => {
+        el.setAttribute('data-mcp-sniff', String(index));
+      });
+      return candidates.length;
+    });
+
+    const handles = await frame.$$('[data-mcp-sniff]');
+
+    for (const handle of handles) {
+      try {
+        const { objectId } = handle.remoteObject();
+        if (!objectId) continue;
+
+        const { node } = await cdpSession.send('DOM.describeNode', { objectId }) as any;
+        const backendNodeId = node.backendNodeId;
+
+        if (backendNodeId !== undefined && !renderedNodeIds.has(backendNodeId)) {
+          const details = await handle.evaluate((el: any) => {
+            const style = window.getComputedStyle(el);
+            const text = el.textContent ? el.textContent.trim().substring(0, 30) : '';
+            const className = el.className && typeof el.className === 'string' ? el.className.trim() : '';
+            return {
+              tag: el.tagName.toLowerCase(),
+              id: el.id || '',
+              className,
+              cursor: style.cursor,
+              text,
+            };
+          });
+
+          prunedElements.push({
+            backendNodeId,
+            ...details,
+          });
+        }
+        await handle.evaluate((el: any) => el.removeAttribute('data-mcp-sniff'));
+      } catch (err: any) {
+        // Safe fallback
+      } finally {
+        await handle.dispose();
+      }
+    }
+  } catch (err: any) {
+    // Safe fallback
+  }
+  return prunedElements;
+}
 
 /**
  * Get the semantic surface: the LLM's primary perception of the page.
@@ -205,8 +320,23 @@ export async function getSemanticSurface(
       // Update immutable node index with this frame's nodes
       nodeIndex.buildFromAXNodes(nodes as any[]);
 
-      // Serialize inline (previously used worker thread, which broke in production builds)
-      const markdown = serializeAXTreeToMarkdown(nodes, options.semanticOnly || false);
+      // Serialize inline, tracking rendered nodes in the set
+      const renderedNodeIds = new Set<number>();
+      let markdown = serializeAXTreeToMarkdown(nodes, options.semanticOnly || false, undefined, renderedNodeIds);
+
+      // Sniff and append pruned non-semantic interactive controls using the frame-specific CDPSession
+      const frameCdp = (frame as any).client || cdpSession;
+      const pruned = await sniffPrunedInteractiveElements(page, frame, frameCdp, renderedNodeIds);
+      if (pruned.length > 0) {
+        let prunedMd = '\n\n### Pruned Potential Interactive Elements (Non-Semantic)\n';
+        for (const el of pruned) {
+          const classStr = el.className ? `, class: "${el.className}"` : '';
+          const idStr = el.id ? `, id: "${el.id}"` : '';
+          const textStr = el.text ? ` "${el.text}"` : '';
+          prunedMd += `- [${el.tag}]${textStr} (cursor: "${el.cursor}"${classStr}${idStr}) [id: ${el.backendNodeId}]\n`;
+        }
+        markdown += prunedMd;
+      }
 
       if (markdown && markdown !== '*(Empty accessibility tree)*') {
         const frameUrl = frame.url();
@@ -215,7 +345,7 @@ export async function getSemanticSurface(
         } else {
           combinedMarkdown += `\n--- iframe: ${frameUrl} ---\n${markdown}\n`;
         }
-        totalNodeCount += nodes.length;
+        totalNodeCount += nodes.length + pruned.length;
         frameCount++;
       }
     } catch (err) {

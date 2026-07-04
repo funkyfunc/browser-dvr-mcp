@@ -6,7 +6,7 @@
 // If blocked, execution is halted and a descriptive error traces the exact
 // obstructing DOM node.
 
-import type { CDPSession, Page } from 'puppeteer-core';
+import type { CDPSession, Page, Frame } from 'puppeteer-core';
 import type { SpatialValidationResult, BoundingBox } from '../core/types.js';
 
 /**
@@ -18,7 +18,8 @@ export async function validateSpatialCoordinate(
   cdpSession: CDPSession,
   x: number,
   y: number,
-  targetBackendNodeId?: number
+  targetBackendNodeId?: number,
+  frame?: Frame
 ): Promise<SpatialValidationResult> {
   // First: verify coordinates are within viewport
   const viewport = await page.evaluate(() => ({
@@ -40,7 +41,9 @@ export async function validateSpatialCoordinate(
     return { valid: true, coordinates: { x, y } };
   }
 
-  // Resolve the target element to check if it's actually at the point
+  const targetFrame = frame || page.mainFrame();
+
+  // Resolve target element box via the frame-specific cdpSession
   try {
     const result = await cdpSession.send('DOM.getBoxModel', {
       backendNodeId: targetBackendNodeId,
@@ -64,11 +67,25 @@ export async function validateSpatialCoordinate(
       };
     }
 
-    // Check what's actually at the center of the target
-    const centerX = targetRect.x + targetRect.width / 2;
-    const centerY = targetRect.y + targetRect.height / 2;
+    const centerX = x;
+    const centerY = y;
 
-    const hitTest = await page.evaluate((cx, cy) => {
+    // Map global centerX, centerY to frame-local coordinates if inside iframe
+    let localX = centerX;
+    let localY = centerY;
+    if (targetFrame !== page.mainFrame()) {
+      const iframeHandle = await targetFrame.frameElement();
+      if (iframeHandle) {
+        const box = await iframeHandle.boundingBox();
+        if (box) {
+          localX = centerX - box.x;
+          localY = centerY - box.y;
+        }
+      }
+    }
+
+    // Check what's actually at the center of the target (within targetFrame's context using local coords)
+    const hitTest = await targetFrame.evaluate((cx, cy) => {
       const topEl = document.elementFromPoint(cx, cy);
       if (!topEl) return { found: false };
 
@@ -78,7 +95,7 @@ export async function validateSpatialCoordinate(
         id: topEl.id || undefined,
         className: typeof topEl.className === 'string' ? topEl.className.trim().split(/\s+/).slice(0, 2).join('.') : undefined,
       };
-    }, centerX, centerY);
+    }, localX, localY);
 
     if (!hitTest.found) {
       return {
@@ -91,27 +108,24 @@ export async function validateSpatialCoordinate(
     }
 
     // Verify the hit element is the target or contains/is contained by target
-    const containsCheck = await page.evaluate((cx, cy) => {
+    const containsCheck = await targetFrame.evaluate((cx, cy) => {
       const topEl = document.elementFromPoint(cx, cy);
       if (!topEl) return { occluded: true, occluder: 'null' };
 
-      // Walk up from topEl looking for our target
-      // We can't directly reference backendNodeId in page context,
-      // so we check if the topmost element is what we expect
       const rect = topEl.getBoundingClientRect();
       const occluderSelector = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className && typeof topEl.className === 'string' ? '.' + topEl.className.trim().split(/\s+/).slice(0, 2).join('.') : ''}`;
       return {
-        occluded: false, // We'll verify via backendNodeId comparison below
+        occluded: false,
         occluder: occluderSelector,
         occluderRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       };
-    }, centerX, centerY);
+    }, localX, localY);
 
-    // Verify via CDP that the topmost node at point matches our target
+    // Verify via CDP (using the target frame's session) that the topmost node at point matches our target
     try {
       const nodeAtPoint = await cdpSession.send('DOM.getNodeForLocation', {
-        x: Math.round(centerX),
-        y: Math.round(centerY),
+        x: Math.round(localX),
+        y: Math.round(localY),
         includeUserAgentShadowDOM: false,
       }) as { backendNodeId: number; frameId?: string; nodeId?: number };
 
@@ -119,8 +133,7 @@ export async function validateSpatialCoordinate(
         return { valid: true, coordinates: { x: centerX, y: centerY }, targetRect };
       }
 
-      // Check if the node at point is a descendant of our target
-      // (clicking a span inside a button should still work)
+      // Check if the node at point is a descendant of our target or vice-versa
       try {
         const { object: targetObj } = await cdpSession.send('DOM.resolveNode', {
           backendNodeId: targetBackendNodeId,
@@ -131,30 +144,42 @@ export async function validateSpatialCoordinate(
         }) as { object: { objectId?: string } };
 
         if (targetObj.objectId && hitObj.objectId) {
+          const check = await cdpSession.send('Runtime.callFunctionOn', {
+            functionDeclaration: 'function(target) { return this === target || target.contains(this); }',
+            objectId: hitObj.objectId,
+            arguments: [{ objectId: targetObj.objectId }],
+            returnByValue: true
+          }) as { result: { value: boolean } };
+
           // Clean up remote objects
           await cdpSession.send('Runtime.releaseObject', { objectId: targetObj.objectId }).catch(() => {});
           await cdpSession.send('Runtime.releaseObject', { objectId: hitObj.objectId }).catch(() => {});
 
-          // If the backendNodeId differs but we couldn't definitively prove occlusion,
-          // accept the click (child element of target)
-          return { valid: true, coordinates: { x: centerX, y: centerY }, targetRect };
+          if (check.result && check.result.value === true) {
+            return { valid: true, coordinates: { x: centerX, y: centerY }, targetRect };
+          }
         }
       } catch {
-        // Can't resolve — likely the node is in a different frame, allow click
-        return { valid: true, coordinates: { x: centerX, y: centerY }, targetRect };
+        // Safe fallback
       }
 
       return {
         valid: false,
         coordinates: { x: centerX, y: centerY },
         occluded: true,
-        occluder: containsCheck.occluder,
+        occluder: `Interaction hit element <${containsCheck.occluder}> instead of target. The element may be clipped, covered, or hidden by layout/CSS constraints.`,
         occluderRect: containsCheck.occluderRect as BoundingBox,
         targetRect,
       };
-    } catch {
-      // DOM.getNodeForLocation may not be available — fall back to allowing
-      return { valid: true, coordinates: { x: centerX, y: centerY }, targetRect };
+    } catch (err: any) {
+      return {
+        valid: false,
+        coordinates: { x: centerX, y: centerY },
+        occluded: true,
+        occluder: `Interaction hit element <${containsCheck.occluder}> instead of target. (CDP location resolution error: ${err.message})`,
+        occluderRect: containsCheck.occluderRect as BoundingBox,
+        targetRect,
+      };
     }
   } catch (err) {
     return {

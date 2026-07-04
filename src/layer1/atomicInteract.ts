@@ -12,7 +12,7 @@
 // - Access to raw input events (dispatchMouseEvent, dispatchKeyEvent)
 // - No Puppeteer overhead or abstraction leakage
 
-import type { CDPSession, Page } from 'puppeteer-core';
+import type { CDPSession, Page, Frame } from 'puppeteer-core';
 import { validateSpatialCoordinate, resolveElementCenter } from './spatialValidation.js';
 import type { SessionTelemetryManager } from '../telemetry/SessionTelemetryManager.js';
 
@@ -32,12 +32,16 @@ export async function atomicClick(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  const { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  if (options.offset) {
+    x += options.offset[0];
+    y += options.offset[1];
+  }
 
   // Spatial validation
-  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId);
+  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
   if (!validation.valid) {
     return {
       success: false,
@@ -147,33 +151,55 @@ export async function atomicDoubleClick(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  const { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  if (options.offset) {
+    x += options.offset[0];
+    y += options.offset[1];
+  }
 
-  if (x < 0 || y < 0) {
+  // Spatial validation
+  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
+  if (!validation.valid) {
     return {
       success: false,
       action: 'dblclick',
       coordinates: { x, y },
-      feedback: `Coordinates (${x}, ${y}) out of viewport bounds.`,
+      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
     };
   }
 
   // First click
   await cdpSession.send('Input.dispatchMouseEvent', {
-    type: 'mousePressed', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1,
+    type: 'mousePressed',
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 1,
   });
   await cdpSession.send('Input.dispatchMouseEvent', {
-    type: 'mouseReleased', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1,
+    type: 'mouseReleased',
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 1,
   });
 
   // Second click
   await cdpSession.send('Input.dispatchMouseEvent', {
-    type: 'mousePressed', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 2,
+    type: 'mousePressed',
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 2,
   });
   await cdpSession.send('Input.dispatchMouseEvent', {
-    type: 'mouseReleased', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 2,
+    type: 'mouseReleased',
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 2,
   });
 
   await new Promise(r => setTimeout(r, 150));
@@ -181,15 +207,16 @@ export async function atomicDoubleClick(
   telemetry.addInteraction({
     type: 'click', // track as click
     timestamp: Date.now(),
-    x, y,
+    x: validation.coordinates.x,
+    y: validation.coordinates.y,
     target: `backendNodeId:${backendNodeId}`,
   });
 
   return {
     success: true,
     action: 'dblclick',
-    coordinates: { x, y },
-    feedback: `Double-clicked element (id: ${backendNodeId}).`,
+    coordinates: validation.coordinates,
+    feedback: `Double-clicked element (id: ${backendNodeId}) at (${Math.round(validation.coordinates.x)}, ${Math.round(validation.coordinates.y)}).`,
   };
 }
 
@@ -202,31 +229,50 @@ export async function atomicType(
   backendNodeId: number,
   text: string,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; clearFirst?: boolean } = {}
+  options: { timeoutMs?: number; clearFirst?: boolean; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  const { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  if (options.offset) {
+    x += options.offset[0];
+    y += options.offset[1];
+  }
+
+  // Spatial validation
+  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
+  if (!validation.valid) {
+    return {
+      success: false,
+      action: 'type',
+      coordinates: { x, y },
+      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+    };
+  }
 
   // Focus via click
   await cdpSession.send('Input.dispatchMouseEvent', {
     type: 'mousePressed',
-    x: Math.round(x), y: Math.round(y),
-    button: 'left', clickCount: 1,
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 1,
   });
   await cdpSession.send('Input.dispatchMouseEvent', {
     type: 'mouseReleased',
-    x: Math.round(x), y: Math.round(y),
-    button: 'left', clickCount: 1,
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 1,
   });
 
   // Optional: select all text, then delete to clear field first
   if (options.clearFirst !== false) {
     await cdpSession.send('Input.dispatchKeyEvent', {
-      type: 'keyDown', commands: ['selectAll'],
+      type: 'keyDown',
+      commands: ['selectAll'],
     });
-    // We don't need backspace, insertText below will overwrite the selection.
   }
 
-  // Type each character using insertText for proper IME handling
+  // Type text using insertText
   await cdpSession.send('Input.insertText', { text });
 
   await new Promise(r => setTimeout(r, 150));
@@ -234,7 +280,8 @@ export async function atomicType(
   telemetry.addInteraction({
     type: 'type',
     timestamp: Date.now(),
-    x, y,
+    x: validation.coordinates.x,
+    y: validation.coordinates.y,
     text: text.substring(0, 50),
     target: `backendNodeId:${backendNodeId}`,
   });
@@ -242,8 +289,8 @@ export async function atomicType(
   return {
     success: true,
     action: 'type',
-    coordinates: { x, y },
-    feedback: `Typed "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}" into element (id: ${backendNodeId}).`,
+    coordinates: validation.coordinates,
+    feedback: `Typed "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}" into element (id: ${backendNodeId}) at (${Math.round(validation.coordinates.x)}, ${Math.round(validation.coordinates.y)}).`,
   };
 }
 
@@ -255,34 +302,55 @@ export async function atomicClear(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  const { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  if (options.offset) {
+    x += options.offset[0];
+    y += options.offset[1];
+  }
+
+  // Spatial validation
+  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
+  if (!validation.valid) {
+    return {
+      success: false,
+      action: 'clear',
+      coordinates: { x, y },
+      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+    };
+  }
 
   // Focus first
   await cdpSession.send('Input.dispatchMouseEvent', {
     type: 'mousePressed',
-    x: Math.round(x), y: Math.round(y),
-    button: 'left', clickCount: 1,
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 1,
   });
   await cdpSession.send('Input.dispatchMouseEvent', {
     type: 'mouseReleased',
-    x: Math.round(x), y: Math.round(y),
-    button: 'left', clickCount: 1,
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
+    button: 'left',
+    clickCount: 1,
   });
 
   // Select all and clear
   await cdpSession.send('Input.dispatchKeyEvent', {
-    type: 'keyDown', commands: ['selectAll'],
+    type: 'keyDown',
+    commands: ['selectAll'],
   });
   await cdpSession.send('Input.insertText', { text: '' });
 
   await new Promise(r => setTimeout(r, 150));
 
   telemetry.addInteraction({
-    type: 'type', // Tracked as a type operation for simplicity
+    type: 'type',
     timestamp: Date.now(),
-    x, y,
+    x: validation.coordinates.x,
+    y: validation.coordinates.y,
     text: '',
     target: `backendNodeId:${backendNodeId}`,
   });
@@ -290,8 +358,8 @@ export async function atomicClear(
   return {
     success: true,
     action: 'clear',
-    coordinates: { x, y },
-    feedback: `Cleared text in element (id: ${backendNodeId}).`,
+    coordinates: validation.coordinates,
+    feedback: `Cleared text in element (id: ${backendNodeId}) at (${Math.round(validation.coordinates.x)}, ${Math.round(validation.coordinates.y)}).`,
   };
 }
 
@@ -303,14 +371,29 @@ export async function atomicHover(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  const { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+  if (options.offset) {
+    x += options.offset[0];
+    y += options.offset[1];
+  }
+
+  // Spatial validation
+  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
+  if (!validation.valid) {
+    return {
+      success: false,
+      action: 'hover',
+      coordinates: { x, y },
+      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+    };
+  }
 
   await cdpSession.send('Input.dispatchMouseEvent', {
     type: 'mouseMoved',
-    x: Math.round(x),
-    y: Math.round(y),
+    x: Math.round(validation.coordinates.x),
+    y: Math.round(validation.coordinates.y),
   });
 
   await new Promise(r => setTimeout(r, 150));
@@ -318,15 +401,16 @@ export async function atomicHover(
   telemetry.addInteraction({
     type: 'hover',
     timestamp: Date.now(),
-    x, y,
+    x: validation.coordinates.x,
+    y: validation.coordinates.y,
     target: `backendNodeId:${backendNodeId}`,
   });
 
   return {
     success: true,
     action: 'hover',
-    coordinates: { x, y },
-    feedback: `Hovered over element (id: ${backendNodeId}) at (${Math.round(x)}, ${Math.round(y)}).`,
+    coordinates: validation.coordinates,
+    feedback: `Hovered over element (id: ${backendNodeId}) at (${Math.round(validation.coordinates.x)}, ${Math.round(validation.coordinates.y)}).`,
   };
 }
 
@@ -360,7 +444,7 @@ export async function atomicKeyPress(
  * Atomic scroll.
  */
 export async function atomicScroll(
-  page: Page,
+  page: Page | Frame,
   _cdpSession: CDPSession,
   direction: 'up' | 'down' | 'top' | 'bottom',
   telemetry: SessionTelemetryManager,
@@ -384,5 +468,103 @@ export async function atomicScroll(
     success: true,
     action: 'scroll',
     feedback: `Scrolled ${direction}${amount ? ` by ${amount}px` : ''}.`,
+  };
+}
+
+/**
+ * Automatically discovers the frame context of a backendNodeId.
+ */
+export async function findFrameForBackendNodeId(
+  page: Page,
+  backendNodeId: number
+): Promise<Frame> {
+  const frames = page.frames();
+  for (const frame of frames) {
+    try {
+      const handle = await (frame as any).mainRealm().adoptBackendNode(backendNodeId);
+      if (handle) {
+        const isOwner = await handle.evaluate((el: any) => el.ownerDocument.defaultView === window);
+        await handle.dispose();
+        if (isOwner) {
+          return frame;
+        }
+      }
+    } catch {
+      // Ignore errors (e.g. cross-process target adoption throws)
+    }
+  }
+  return page.mainFrame(); // Default fallback
+}
+
+/**
+ * Atomic drag and drop operation using direct CDP mouse events.
+ */
+export async function atomicDragAndDrop(
+  _page: Page,
+  cdpSession: CDPSession,
+  source: { x: number; y: number },
+  destination: { x: number; y: number },
+  telemetry: SessionTelemetryManager
+): Promise<AtomicInteractResult> {
+  // 1. Move mouse to start coordinates (hover)
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: Math.round(source.x),
+    y: Math.round(source.y),
+  });
+  await new Promise(r => setTimeout(r, 50));
+
+  // 2. Press left button at start
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: Math.round(source.x),
+    y: Math.round(source.y),
+    button: 'left',
+    buttons: 1,
+    clickCount: 1,
+  });
+  await new Promise(r => setTimeout(r, 50));
+
+  // 3. Smooth interpolation to destination
+  const steps = 10;
+  for (let i = 1; i <= steps; i++) {
+    const ratio = i / steps;
+    const currX = source.x + (destination.x - source.x) * ratio;
+    const currY = source.y + (destination.y - source.y) * ratio;
+    await cdpSession.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: Math.round(currX),
+      y: Math.round(currY),
+      button: 'left',
+      buttons: 1,
+    });
+    await new Promise(r => setTimeout(r, 20));
+  }
+  await new Promise(r => setTimeout(r, 50));
+
+  // 4. Release mouse button at destination
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: Math.round(destination.x),
+    y: Math.round(destination.y),
+    button: 'left',
+    buttons: 0,
+    clickCount: 1,
+  });
+
+  await new Promise(r => setTimeout(r, 150));
+
+  telemetry.addInteraction({
+    type: 'drag' as any,
+    timestamp: Date.now(),
+    x: source.x,
+    y: source.y,
+    details: `dragged to (${Math.round(destination.x)}, ${Math.round(destination.y)})`,
+  });
+
+  return {
+    success: true,
+    action: 'drag_and_drop',
+    feedback: `Dragged from (${Math.round(source.x)}, ${Math.round(source.y)}) to (${Math.round(destination.x)}, ${Math.round(destination.y)}).`,
   };
 }

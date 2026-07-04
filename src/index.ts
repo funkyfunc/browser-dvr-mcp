@@ -26,8 +26,10 @@ import {
   atomicHover,
   atomicKeyPress,
   atomicScroll,
+  findFrameForBackendNodeId,
+  atomicDragAndDrop,
 } from './layer1/atomicInteract.js';
-import { validateSpatialCoordinate } from './layer1/spatialValidation.js';
+import { validateSpatialCoordinate, resolveElementCenter } from './layer1/spatialValidation.js';
 import { evaluateInContext, listFrameContexts } from './layer1/evaluateInContext.js';
 
 // Layer 2 perception
@@ -203,14 +205,15 @@ server.registerTool(
       '• clear — Clear an input element.\n' +
       '• hover — Move the mouse to an element\'s center to trigger hover states.\n' +
       '• key — Press a keyboard key (e.g., "Enter", "Escape", "Tab", "ArrowDown").\n' +
-      '• scroll — Scroll the page (direction: "up", "down", "top", "bottom").\n\n' +
+      '• scroll — Scroll the page (direction: "up", "down", "top", "bottom").\n' +
+      '• drag_and_drop — Drag an element or coordinate to another element or coordinate.\n\n' +
       'LOCATOR STRATEGIES:\n' +
       '• backendNodeId (number) — The most reliable. Obtained from get_semantic_surface output (the [id: NNN] tag on each node).\n' +
       '• coordinate ([x, y]) — Raw pixel coordinates. Use for Canvas/WebGL or when backendNodeId is unavailable.\n\n' +
       'IMPORTANT: Always prefer backendNodeId from get_semantic_surface over CSS selectors or coordinates. ' +
       'backendNodeIds are assigned by the browser engine and survive React/Vue re-renders.',
     inputSchema: {
-      action: z.enum(['click', 'dblclick', 'type', 'clear', 'hover', 'key', 'scroll']).describe('The interaction action to perform'),
+      action: z.enum(['click', 'dblclick', 'type', 'clear', 'hover', 'key', 'scroll', 'drag_and_drop']).describe('The interaction action to perform'),
       backendNodeId: z.number().optional().describe('The backend DOM node ID from get_semantic_surface (the [id: NNN] tag). Preferred locator.'),
       coordinate: z.array(z.number()).length(2).optional().describe('Raw [x, y] pixel coordinates. Use for Canvas or as fallback.'),
       text: z.string().optional().describe('Text to type (required for action="type")'),
@@ -219,9 +222,13 @@ server.registerTool(
       direction: z.enum(['up', 'down', 'top', 'bottom']).optional().describe('Scroll direction (required for action="scroll")'),
       amount: z.number().optional().describe('Scroll amount in pixels (default: viewport height)'),
       timeoutMs: z.number().optional().describe('Max time in ms to wait for the element to become interactable (default: 2000)'),
+      dragToBackendNodeId: z.number().optional().describe('The backend DOM node ID to drag to (required for action="drag_and_drop" if dragToCoordinate is not provided).'),
+      dragToCoordinate: z.array(z.number()).length(2).optional().describe('Raw [x, y] pixel coordinates to drag to (required for action="drag_and_drop" if dragToBackendNodeId is not provided).'),
+      frameIndex: z.number().optional().describe('Target frame index (optional, defaults to automatic detection if backendNodeId is used).'),
+      offset: z.array(z.number()).length(2).optional().describe('Relative [dx, dy] offset from the element center in pixels. Use when center is clipped or covered.'),
     },
   },
-  async ({ action, backendNodeId, coordinate, text, key, clearFirst, direction, amount, timeoutMs }) => {
+  async ({ action, backendNodeId, coordinate, text, key, clearFirst, direction, amount, timeoutMs, dragToBackendNodeId, dragToCoordinate, frameIndex, offset }) => {
     const { page, cdp } = requireSession();
     const tel = requireTelemetry();
 
@@ -230,12 +237,76 @@ server.registerTool(
 
     let result;
 
+    // Resolve target frame context
+    let targetFrame = page.mainFrame();
+    if (frameIndex !== undefined) {
+      const frames = page.frames();
+      if (frameIndex < 0 || frameIndex >= frames.length) {
+        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+      }
+      targetFrame = frames[frameIndex];
+    } else if (backendNodeId !== undefined) {
+      targetFrame = await findFrameForBackendNodeId(page, backendNodeId);
+    }
+
+    const targetCdp = (targetFrame as any).client || cdp;
+
+    // Validate that the target coordinates lie within the visual boundaries of the target iframe
+    if (targetFrame !== page.mainFrame()) {
+      let x: number | null = null;
+      let y: number | null = null;
+
+      if (coordinate) {
+        x = coordinate[0];
+        y = coordinate[1];
+      } else if (backendNodeId !== undefined) {
+        try {
+          const centerPt = await resolveElementCenter(page, cdp, backendNodeId, timeoutMs || 2000);
+          x = centerPt.x;
+          y = centerPt.y;
+          if (offset) {
+            x += offset[0];
+            y += offset[1];
+          }
+        } catch {
+          // If we can't resolve center here, let the handler fail and report it
+        }
+      }
+
+      if (x !== null && y !== null) {
+        try {
+          const iframeHandle = await targetFrame.frameElement();
+          if (iframeHandle) {
+            const box = await iframeHandle.boundingBox();
+            if (box) {
+              const isInside = (
+                x >= box.x &&
+                x <= box.x + box.width &&
+                y >= box.y &&
+                y <= box.y + box.height
+              );
+              if (!isInside) {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `Interaction failed: Calculated coordinate (${Math.round(x)}, ${Math.round(y)}) lies outside the parent iframe's visible boundaries (x: ${Math.round(box.x)}, y: ${Math.round(box.y)}, width: ${Math.round(box.width)}, height: ${Math.round(box.height)}). The iframe may be squished, clipped, or hidden by CSS layout constraints.`
+                  }]
+                };
+              }
+            }
+          }
+        } catch {
+          // Fall back if frameElement or boundingBox fails
+        }
+      }
+    }
+
     switch (action) {
       case 'click':
         if (coordinate) {
-          result = await coordinateClick(page, cdp, coordinate[0], coordinate[1], tel);
+          result = await coordinateClick(page, targetCdp, coordinate[0], coordinate[1], tel);
         } else if (backendNodeId !== undefined) {
-          result = await atomicClick(page, cdp, backendNodeId, tel, { timeoutMs });
+          result = await atomicClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
         } else {
           throw new Error('click requires either backendNodeId or coordinate.');
         }
@@ -243,7 +314,7 @@ server.registerTool(
 
       case 'dblclick':
         if (backendNodeId !== undefined) {
-          result = await atomicDoubleClick(page, cdp, backendNodeId, tel, { timeoutMs });
+          result = await atomicDoubleClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
         } else {
           throw new Error('dblclick requires backendNodeId.');
         }
@@ -252,12 +323,12 @@ server.registerTool(
       case 'type':
         if (!text) throw new Error('type action requires the "text" parameter.');
         if (backendNodeId !== undefined) {
-          result = await atomicType(page, cdp, backendNodeId, text, tel, { clearFirst, timeoutMs });
+          result = await atomicType(page, targetCdp, backendNodeId, text, tel, { clearFirst, timeoutMs, offset: offset as [number, number], frame: targetFrame });
         } else if (coordinate) {
           // Click coordinate first, then type
-          await coordinateClick(page, cdp, coordinate[0], coordinate[1], tel);
+          await coordinateClick(page, targetCdp, coordinate[0], coordinate[1], tel);
           // Use CDP insertText for typing
-          await cdp.send('Input.insertText', { text });
+          await targetCdp.send('Input.insertText', { text });
           result = { success: true, action: 'type', feedback: `Typed "${text.substring(0, 30)}" at (${coordinate[0]}, ${coordinate[1]}).` };
         } else {
           throw new Error('type requires either backendNodeId or coordinate.');
@@ -266,7 +337,7 @@ server.registerTool(
 
       case 'clear':
         if (backendNodeId !== undefined) {
-          result = await atomicClear(page, cdp, backendNodeId, tel, { timeoutMs });
+          result = await atomicClear(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
         } else {
           throw new Error('clear requires backendNodeId.');
         }
@@ -274,9 +345,9 @@ server.registerTool(
 
       case 'hover':
         if (backendNodeId !== undefined) {
-          result = await atomicHover(page, cdp, backendNodeId, tel, { timeoutMs });
+          result = await atomicHover(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame });
         } else if (coordinate) {
-          await cdp.send('Input.dispatchMouseEvent', {
+          await targetCdp.send('Input.dispatchMouseEvent', {
             type: 'mouseMoved', x: Math.round(coordinate[0]), y: Math.round(coordinate[1]),
           });
           result = { success: true, action: 'hover', feedback: `Hovered at (${coordinate[0]}, ${coordinate[1]}).` };
@@ -287,12 +358,57 @@ server.registerTool(
 
       case 'key':
         if (!key) throw new Error('key action requires the "key" parameter.');
-        result = await atomicKeyPress(page, cdp, key, tel);
+        result = await atomicKeyPress(page, targetCdp, key, tel);
         break;
 
       case 'scroll':
         if (!direction) throw new Error('scroll action requires the "direction" parameter.');
-        result = await atomicScroll(page, cdp, direction, tel, amount);
+        result = await atomicScroll(targetFrame, targetCdp, direction, tel, amount);
+        break;
+
+      case 'drag_and_drop':
+        // Resolve start point:
+        let startPt: { x: number; y: number };
+        if (coordinate) {
+          startPt = { x: coordinate[0], y: coordinate[1] };
+        } else if (backendNodeId !== undefined) {
+          startPt = await resolveElementCenter(page, cdp, backendNodeId, timeoutMs || 2000);
+          if (offset) {
+            startPt.x += offset[0];
+            startPt.y += offset[1];
+          }
+        } else {
+          throw new Error('drag_and_drop requires either backendNodeId or coordinate.');
+        }
+
+        // Spatial validation on start point if backendNodeId is provided
+        if (backendNodeId !== undefined) {
+          const validation = await validateSpatialCoordinate(page, targetCdp, startPt.x, startPt.y, backendNodeId, targetFrame);
+          if (!validation.valid) {
+            result = {
+              success: false,
+              action: 'drag_and_drop',
+              coordinates: startPt,
+              feedback: `Spatial validation failed for drag start: ${validation.occluder || 'unknown obstruction'}`,
+            };
+            break;
+          }
+          startPt = validation.coordinates;
+        }
+
+        // Resolve end point:
+        let endPt: { x: number; y: number };
+        if (dragToCoordinate) {
+          endPt = { x: dragToCoordinate[0], y: dragToCoordinate[1] };
+        } else if (dragToBackendNodeId !== undefined) {
+          const destFrame = await findFrameForBackendNodeId(page, dragToBackendNodeId);
+          const destCdp = (destFrame as any).client || cdp;
+          endPt = await resolveElementCenter(page, destCdp, dragToBackendNodeId, timeoutMs || 2000);
+        } else {
+          throw new Error('drag_and_drop requires either dragToBackendNodeId or dragToCoordinate.');
+        }
+
+        result = await atomicDragAndDrop(page, targetCdp, startPt, endPt, tel);
         break;
     }
 

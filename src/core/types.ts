@@ -90,7 +90,7 @@ export interface MutationEvent {
 }
 
 export interface InteractionEvent {
-  type: 'click' | 'type' | 'keypress' | 'hover' | 'scroll' | 'input';
+  type: 'click' | 'type' | 'keypress' | 'hover' | 'scroll' | 'input' | 'drag';
   timestamp: number;
   target?: string;
   text?: string;
@@ -118,7 +118,7 @@ export interface SessionSummary {
 
 // ─── Layer 1: Action Primitives ─────────────────────────────────────────────
 
-export type InteractionAction = 'click' | 'type' | 'hover' | 'scroll' | 'key';
+export type InteractionAction = 'click' | 'type' | 'hover' | 'scroll' | 'key' | 'drag_and_drop';
 
 export interface AtomicInteractOptions {
   locatorStrategy: 'backendNodeId' | 'coordinate' | 'cssSelector' | 'accessibleName';
@@ -130,6 +130,9 @@ export interface AtomicInteractOptions {
   amount?: number;         // For scroll
   frameIndex?: number;     // Target frame
   timeoutMs?: number;      // Wait for element
+  dragToBackendNodeId?: number;
+  dragToCoordinate?: [number, number];
+  offset?: [number, number];
 }
 
 export interface SpatialValidationResult {
