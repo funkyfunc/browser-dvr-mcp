@@ -17,7 +17,6 @@ function findChrome() {
 }
 
 describe('Developer Feedback Fixes Regression Tests', () => {
-
   it('should pierce iframes and find elements in query selector', async () => {
     const browser = await puppeteer.launch({
       executablePath: findChrome(),
@@ -37,7 +36,7 @@ describe('Developer Feedback Fixes Regression Tests', () => {
       </body>
     `);
 
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
 
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
@@ -46,12 +45,15 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     expect(frames.length).toBeGreaterThan(1);
 
     // Let's find the backendNodeId of the iframe title h1
-    const subframe = frames.find(f => f !== page.mainFrame())!;
+    const subframe = frames.find((f) => f !== page.mainFrame())!;
     const headingHandle = await subframe.$('.iframe-heading');
     expect(headingHandle).not.toBeNull();
 
-    const remoteObj = (headingHandle as any).remoteObject?.() || (headingHandle as any)._remoteObject;
-    const { node } = await (subframe as any).client.send('DOM.describeNode', { objectId: remoteObj.objectId });
+    const remoteObj =
+      (headingHandle as any).remoteObject?.() || (headingHandle as any)._remoteObject;
+    const { node } = await (subframe as any).client.send('DOM.describeNode', {
+      objectId: remoteObj.objectId,
+    });
     const h1BackendNodeId = node.backendNodeId;
     expect(h1BackendNodeId).toBeDefined();
 
@@ -62,16 +64,18 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     // Verify computed style resolves inside the iframe correctly via frame's CDP session
     const targetCdp = (foundFrame as any).client;
     await targetCdp.send('DOM.enable');
-    const { object } = await targetCdp.send('DOM.resolveNode', { backendNodeId: h1BackendNodeId }) as { object: { objectId?: string } };
+    const { object } = (await targetCdp.send('DOM.resolveNode', {
+      backendNodeId: h1BackendNodeId,
+    })) as { object: { objectId?: string } };
     expect(object?.objectId).toBeDefined();
 
-    const evalResult = await targetCdp.send('Runtime.callFunctionOn', {
+    const evalResult = (await targetCdp.send('Runtime.callFunctionOn', {
       objectId: object.objectId,
       functionDeclaration: `function() {
         return window.getComputedStyle(this).color;
       }`,
       returnByValue: true,
-    }) as { result: { value: string } };
+    })) as { result: { value: string } };
 
     expect(evalResult.result.value).toBe('rgb(255, 0, 0)');
     await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId });
@@ -125,10 +129,10 @@ describe('Developer Feedback Fixes Regression Tests', () => {
 
   it('should resolve safe paths correctly', async () => {
     const { resolveSafePath } = await import('../src/index.js');
-    
+
     // Absolute paths should remain unchanged
     expect(resolveSafePath('/foo/bar')).toBe('/foo/bar');
-    
+
     // Relative paths should resolve against CWD if CWD is not root
     const resolvedRelative = resolveSafePath('recordings/rec_123');
     expect(resolvedRelative).toContain('recordings/rec_123');
@@ -136,7 +140,8 @@ describe('Developer Feedback Fixes Regression Tests', () => {
   });
 
   it('should bypass spatial validation when force is true', async () => {
-    const { resolveAndValidateSpatialCoordinate } = await import('../src/layer1/spatialValidation.js');
+    const { resolveAndValidateSpatialCoordinate } =
+      await import('../src/layer1/spatialValidation.js');
     const browser = await puppeteer.launch({
       executablePath: findChrome(),
       headless: true,
@@ -148,11 +153,11 @@ describe('Developer Feedback Fixes Regression Tests', () => {
         <div id="occluder" style="position: absolute; top: 0; left: 0; width: 100px; height: 100px; background: rgba(0,0,0,0.5);">Occluder</div>
       </div>
     `);
-    
+
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
 
-    const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
     let targetBackendNodeId: number | null = null;
     const findTarget = (node: any) => {
       if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('target')) {
@@ -167,12 +172,25 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     expect(targetBackendNodeId).not.toBeNull();
 
     // Normal validation should fail due to occlusion
-    const normalVal = await resolveAndValidateSpatialCoordinate(page, cdp, targetBackendNodeId!, 500);
+    const normalVal = await resolveAndValidateSpatialCoordinate(
+      page,
+      cdp,
+      targetBackendNodeId!,
+      500,
+    );
     expect(normalVal.valid).toBe(false);
     expect(normalVal.error).toContain('Spatial validation failed');
 
     // Force validation should succeed and return coordinates
-    const forceVal = await resolveAndValidateSpatialCoordinate(page, cdp, targetBackendNodeId!, 500, undefined, undefined, true);
+    const forceVal = await resolveAndValidateSpatialCoordinate(
+      page,
+      cdp,
+      targetBackendNodeId!,
+      500,
+      undefined,
+      undefined,
+      true,
+    );
     expect(forceVal.valid).toBe(true);
     expect(forceVal.coordinates).toBeDefined();
 
@@ -237,7 +255,7 @@ describe('Developer Feedback Fixes Regression Tests', () => {
         "></iframe>
       </body>
     `);
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
 
     // Resolve matches
     const searchText = 'Iframe Target Text';
@@ -249,7 +267,12 @@ describe('Developer Feedback Fixes Regression Tests', () => {
         const el = document.getElementById('target');
         if (el && el.textContent?.includes(searchStr)) {
           const rect = el.getBoundingClientRect();
-          return [{ text: el.textContent, boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }];
+          return [
+            {
+              text: el.textContent,
+              boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            },
+          ];
         }
         return [];
       }, searchText);
@@ -263,7 +286,7 @@ describe('Developer Feedback Fixes Regression Tests', () => {
             y: m.boundingBox.y + offset.y,
             width: m.boundingBox.width,
             height: m.boundingBox.height,
-          }
+          },
         });
       }
     }
@@ -291,12 +314,12 @@ describe('Developer Feedback Fixes Regression Tests', () => {
         "></iframe>
       </body>
     `);
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
 
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
 
-    const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
     let btnBackendNodeId: number | null = null;
     const findTarget = (node: any) => {
       if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('btn')) {
@@ -311,18 +334,20 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     findTarget(doc.root);
     expect(btnBackendNodeId).not.toBeNull();
 
-    const subframe = page.frames().find(f => f !== page.mainFrame())!;
+    const subframe = page.frames().find((f) => f !== page.mainFrame())!;
     const frameId = (subframe as any)._id ?? (subframe as any)._frameId ?? (subframe as any).id;
 
     const { getElementTree } = await import('../src/layer2/semanticSurface.js');
     const { ImmutableNodeIndex } = await import('../src/core/ImmutableNodeIndex.js');
     const nodeIdx = new ImmutableNodeIndex();
 
-    const result = await getElementTree(cdp, nodeIdx, btnBackendNodeId!, { semanticOnly: true, frameId });
+    const result = await getElementTree(cdp, nodeIdx, btnBackendNodeId!, {
+      semanticOnly: true,
+      frameId,
+    });
     expect(result.text).toContain('button');
     expect(result.text).toContain('Iframe Button');
 
     await browser.close();
   });
-
 });

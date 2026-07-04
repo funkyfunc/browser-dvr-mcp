@@ -32,7 +32,7 @@ export async function atomicClick(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {},
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -42,7 +42,7 @@ export async function atomicClick(
     options.timeoutMs || 2000,
     options.frame,
     options.offset,
-    options.force
+    options.force,
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -70,7 +70,7 @@ export async function atomicClick(
   });
 
   // Brief settle time for DOM mutations
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150));
 
   telemetry.addInteraction({
     type: 'click',
@@ -96,7 +96,7 @@ export async function coordinateClick(
   cdpSession: CDPSession,
   x: number,
   y: number,
-  telemetry: SessionTelemetryManager
+  telemetry: SessionTelemetryManager,
 ): Promise<AtomicInteractResult> {
   // Bounds check
   const viewport = await page.evaluate(() => ({
@@ -128,12 +128,13 @@ export async function coordinateClick(
     clickCount: 1,
   });
 
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150));
 
   telemetry.addInteraction({
     type: 'click',
     timestamp: Date.now(),
-    x, y,
+    x,
+    y,
     target: `coordinate:(${x},${y})`,
   });
 
@@ -153,7 +154,7 @@ export async function atomicDoubleClick(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {},
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -163,7 +164,7 @@ export async function atomicDoubleClick(
     options.timeoutMs || 2000,
     options.frame,
     options.offset,
-    options.force
+    options.force,
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -206,7 +207,7 @@ export async function atomicDoubleClick(
     clickCount: 2,
   });
 
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150));
 
   telemetry.addInteraction({
     type: 'click', // track as click
@@ -233,7 +234,13 @@ export async function atomicType(
   backendNodeId: number,
   text: string,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; clearFirst?: boolean; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
+  options: {
+    timeoutMs?: number;
+    clearFirst?: boolean;
+    offset?: [number, number];
+    frame?: Frame;
+    force?: boolean;
+  } = {},
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -243,7 +250,7 @@ export async function atomicType(
     options.timeoutMs || 2000,
     options.frame,
     options.offset,
-    options.force
+    options.force,
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -281,7 +288,7 @@ export async function atomicType(
   // Type text using insertText
   await cdpSession.send('Input.insertText', { text });
 
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150));
 
   telemetry.addInteraction({
     type: 'type',
@@ -308,7 +315,7 @@ export async function atomicClear(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {},
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -318,7 +325,7 @@ export async function atomicClear(
     options.timeoutMs || 2000,
     options.frame,
     options.offset,
-    options.force
+    options.force,
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -352,7 +359,7 @@ export async function atomicClear(
   });
   await cdpSession.send('Input.insertText', { text: '' });
 
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150));
 
   telemetry.addInteraction({
     type: 'type',
@@ -379,7 +386,7 @@ export async function atomicHover(
   cdpSession: CDPSession,
   backendNodeId: number,
   telemetry: SessionTelemetryManager,
-  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {}
+  options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame; force?: boolean } = {},
 ): Promise<AtomicInteractResult> {
   // Resolve center & check spatial validation with retry
   const validation = await resolveAndValidateSpatialCoordinate(
@@ -389,7 +396,7 @@ export async function atomicHover(
     options.timeoutMs || 2000,
     options.frame,
     options.offset,
-    options.force
+    options.force,
   );
 
   if (!validation.valid || !validation.coordinates) {
@@ -406,7 +413,7 @@ export async function atomicHover(
     y: Math.round(validation.coordinates.y),
   });
 
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150));
 
   telemetry.addInteraction({
     type: 'hover',
@@ -431,7 +438,7 @@ export async function atomicKeyPress(
   page: Page,
   _cdpSession: CDPSession,
   key: string,
-  telemetry: SessionTelemetryManager
+  telemetry: SessionTelemetryManager,
 ): Promise<AtomicInteractResult> {
   // Use Puppeteer keyboard for complex key names (Enter, Escape, etc.)
   // CDP doesn't have a simple "press key by name" API
@@ -459,7 +466,7 @@ export async function atomicScroll(
   direction: 'up' | 'down' | 'top' | 'bottom',
   telemetry: SessionTelemetryManager,
   amount?: number,
-  backendNodeId?: number
+  backendNodeId?: number,
 ): Promise<AtomicInteractResult> {
   if (backendNodeId !== undefined) {
     try {
@@ -475,9 +482,11 @@ export async function atomicScroll(
             else if (dir === 'top') this.scrollTop = 0;
           }`,
           arguments: [{ value: direction }, { value: amount }],
-          awaitPromise: true
+          awaitPromise: true,
         });
-        await cdpSession.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+        await cdpSession
+          .send('Runtime.releaseObject', { objectId: object.objectId })
+          .catch(() => {});
 
         telemetry.addInteraction({
           type: 'scroll',
@@ -500,13 +509,17 @@ export async function atomicScroll(
     }
   }
 
-  await page.evaluate((dir, amt) => {
-    const scrollAmt = amt || window.innerHeight;
-    if (dir === 'down') window.scrollBy(0, scrollAmt);
-    else if (dir === 'up') window.scrollBy(0, -scrollAmt);
-    else if (dir === 'bottom') window.scrollTo(0, document.body.scrollHeight);
-    else if (dir === 'top') window.scrollTo(0, 0);
-  }, direction, amount);
+  await page.evaluate(
+    (dir, amt) => {
+      const scrollAmt = amt || window.innerHeight;
+      if (dir === 'down') window.scrollBy(0, scrollAmt);
+      else if (dir === 'up') window.scrollBy(0, -scrollAmt);
+      else if (dir === 'bottom') window.scrollTo(0, document.body.scrollHeight);
+      else if (dir === 'top') window.scrollTo(0, 0);
+    },
+    direction,
+    amount,
+  );
 
   telemetry.addInteraction({
     type: 'scroll',
@@ -524,10 +537,7 @@ export async function atomicScroll(
 /**
  * Automatically discovers the frame context of a backendNodeId.
  */
-export async function findFrameForBackendNodeId(
-  page: Page,
-  backendNodeId: number
-): Promise<Frame> {
+export async function findFrameForBackendNodeId(page: Page, backendNodeId: number): Promise<Frame> {
   const frames = page.frames();
   for (const frame of frames) {
     try {
@@ -554,7 +564,7 @@ export async function atomicDragAndDrop(
   cdpSession: CDPSession,
   source: { x: number; y: number },
   destination: { x: number; y: number },
-  telemetry: SessionTelemetryManager
+  telemetry: SessionTelemetryManager,
 ): Promise<AtomicInteractResult> {
   // 1. Move mouse to start coordinates (hover)
   await cdpSession.send('Input.dispatchMouseEvent', {
@@ -562,7 +572,7 @@ export async function atomicDragAndDrop(
     x: Math.round(source.x),
     y: Math.round(source.y),
   });
-  await new Promise(r => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, 50));
 
   // 2. Press left button at start
   await cdpSession.send('Input.dispatchMouseEvent', {
@@ -573,7 +583,7 @@ export async function atomicDragAndDrop(
     buttons: 1,
     clickCount: 1,
   });
-  await new Promise(r => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, 50));
 
   // 3. Smooth interpolation to destination
   const steps = 10;
@@ -588,9 +598,9 @@ export async function atomicDragAndDrop(
       button: 'left',
       buttons: 1,
     });
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
   }
-  await new Promise(r => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, 50));
 
   // 4. Release mouse button at destination
   await cdpSession.send('Input.dispatchMouseEvent', {
@@ -602,7 +612,7 @@ export async function atomicDragAndDrop(
     clickCount: 1,
   });
 
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 150));
 
   telemetry.addInteraction({
     type: 'drag' as any,

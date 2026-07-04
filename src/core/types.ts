@@ -109,7 +109,13 @@ export interface SessionSummary {
   network: { total: number; ok: number; failed: number; pending: number };
   console: { logs: number; warnings: number; errors: number };
   mutations: { total: number; structural: number; attribute: number };
-  interactions: { clicks: number; typing: number; keyPresses: number; scrolls: number; hovers: number };
+  interactions: {
+    clicks: number;
+    typing: number;
+    keyPresses: number;
+    scrolls: number;
+    hovers: number;
+  };
   cumulativeLayoutShift: number;
   detachedDOMNodes: number;
   jsErrors: string[];
@@ -124,12 +130,12 @@ export interface AtomicInteractOptions {
   locatorStrategy: 'backendNodeId' | 'coordinate' | 'cssSelector' | 'accessibleName';
   locatorValue: string | number | [number, number];
   action: InteractionAction;
-  text?: string;           // For type action
-  key?: string;            // For key action
+  text?: string; // For type action
+  key?: string; // For key action
   direction?: 'up' | 'down' | 'top' | 'bottom'; // For scroll
-  amount?: number;         // For scroll
-  frameIndex?: number;     // Target frame
-  timeoutMs?: number;      // Wait for element
+  amount?: number; // For scroll
+  frameIndex?: number; // Target frame
+  timeoutMs?: number; // Wait for element
   dragToBackendNodeId?: number;
   dragToCoordinate?: [number, number];
   offset?: [number, number];
@@ -139,7 +145,7 @@ export interface SpatialValidationResult {
   valid: boolean;
   coordinates: { x: number; y: number };
   occluded?: boolean;
-  occluder?: string;       // CSS selector of blocking element
+  occluder?: string; // CSS selector of blocking element
   occluderRect?: BoundingBox;
   targetRect?: BoundingBox;
 }
@@ -168,7 +174,14 @@ export type WorkerRequest =
 export type WorkerResponse =
   | { type: 'serializeAXTree'; id: string; markdown: string }
   | { type: 'computeStateDelta'; id: string; delta: StateDelta }
-  | { type: 'dump_complete'; success: boolean; frameCount?: number; logCount?: number; outputPath?: string; error?: string };
+  | {
+      type: 'dump_complete';
+      success: boolean;
+      frameCount?: number;
+      logCount?: number;
+      outputPath?: string;
+      error?: string;
+    };
 
 // ─── Ring Buffer Utility ────────────────────────────────────────────────────
 

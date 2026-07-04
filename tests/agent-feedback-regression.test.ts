@@ -29,7 +29,6 @@ let nodeIndex: ImmutableNodeIndex;
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Agent Feedback Regression Tests', () => {
-
   afterAll(async () => {
     if (conn?.isConnected()) {
       await conn.close();
@@ -64,11 +63,7 @@ describe('Agent Feedback Regression Tests', () => {
 
   describe('Bug 2: Semantic surface after navigation', () => {
     it('should return non-empty AX tree after navigation', async () => {
-      const result = await getSemanticSurface(
-        conn.getPage()!,
-        conn.getCDPSession()!,
-        nodeIndex
-      );
+      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
 
       // The critical assertion: this should NOT return empty
       expect(result.markdown).not.toBe('*(Empty accessibility tree)*');
@@ -76,11 +71,7 @@ describe('Agent Feedback Regression Tests', () => {
     });
 
     it('should contain backendNodeId references', async () => {
-      const result = await getSemanticSurface(
-        conn.getPage()!,
-        conn.getCDPSession()!,
-        nodeIndex
-      );
+      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
 
       // Each interactive node should have an [id: NNN] tag
       expect(result.markdown).toMatch(/\[.*id: \d+.*\]/);
@@ -89,11 +80,7 @@ describe('Agent Feedback Regression Tests', () => {
     it('should survive a second navigation to the same page', async () => {
       await conn.navigate(TEST_PAGE_URL);
 
-      const result = await getSemanticSurface(
-        conn.getPage()!,
-        conn.getCDPSession()!,
-        nodeIndex
-      );
+      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
 
       expect(result.markdown).not.toBe('*(Empty accessibility tree)*');
       expect(result.nodeCount).toBeGreaterThan(0);
@@ -106,12 +93,14 @@ describe('Agent Feedback Regression Tests', () => {
     it('should resolve nodes via DOM.describeNode after navigation', async () => {
       const cdp = conn.getCDPSession()!;
 
-      const { root } = await cdp.send('DOM.getDocument') as { root: { nodeId: number; backendNodeId: number } };
+      const { root } = (await cdp.send('DOM.getDocument')) as {
+        root: { nodeId: number; backendNodeId: number };
+      };
       expect(root.nodeId).toBeGreaterThan(0);
 
-      const { node } = await cdp.send('DOM.describeNode', {
+      const { node } = (await cdp.send('DOM.describeNode', {
         backendNodeId: root.backendNodeId,
-      }) as { node: { backendNodeId: number; nodeName: string } };
+      })) as { node: { backendNodeId: number; nodeName: string } };
       expect(node.backendNodeId).toBe(root.backendNodeId);
     });
   });
@@ -132,11 +121,7 @@ describe('Agent Feedback Regression Tests', () => {
     it('should have working perception after networkidle0 navigation', async () => {
       await conn.navigate(TEST_PAGE_URL, { waitUntil: 'networkidle0' });
 
-      const result = await getSemanticSurface(
-        conn.getPage()!,
-        conn.getCDPSession()!,
-        nodeIndex
-      );
+      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
 
       expect(result.markdown).not.toBe('*(Empty accessibility tree)*');
       expect(result.nodeCount).toBeGreaterThan(0);

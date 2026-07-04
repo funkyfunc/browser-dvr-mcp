@@ -42,7 +42,12 @@ import {
   findFrameForBackendNodeId,
   atomicDragAndDrop,
 } from './layer1/atomicInteract.js';
-import { validateSpatialCoordinate, resolveElementCenter, getFrameOffset, resolveAndValidateSpatialCoordinate } from './layer1/spatialValidation.js';
+import {
+  validateSpatialCoordinate,
+  resolveElementCenter,
+  getFrameOffset,
+  resolveAndValidateSpatialCoordinate,
+} from './layer1/spatialValidation.js';
 import { evaluateInContext, listFrameContexts } from './layer1/evaluateInContext.js';
 
 // Layer 2 perception
@@ -71,7 +76,10 @@ let fetchInterceptHandler: ((event: any) => Promise<void>) | null = null;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function requireSession(): { page: NonNullable<ReturnType<typeof connectionManager.getPage>>; cdp: NonNullable<ReturnType<typeof connectionManager.getCDPSession>> } {
+function requireSession(): {
+  page: NonNullable<ReturnType<typeof connectionManager.getPage>>;
+  cdp: NonNullable<ReturnType<typeof connectionManager.getCDPSession>>;
+} {
   const page = connectionManager.getPage();
   const cdp = connectionManager.getCDPSession();
   if (!page || !cdp) throw new Error('No active browser session. Call browser_launch first.');
@@ -97,11 +105,12 @@ const server = new McpServer({
 server.registerTool(
   'ping',
   {
-    description: 'Verify connection to the Best Browser MCP server. Returns "pong" if the server is healthy and ready to accept commands.',
+    description:
+      'Verify connection to the Best Browser MCP server. Returns "pong" if the server is healthy and ready to accept commands.',
   },
   async () => ({
     content: [{ type: 'text', text: 'pong — Best Browser MCP v2.0 is running.' }],
-  })
+  }),
 );
 
 server.registerTool(
@@ -113,8 +122,16 @@ server.registerTool(
       'If a URL is provided, the browser navigates to it immediately after launch (waits for load event). ' +
       'The launched session automatically enables: Accessibility domain, DOM domain, Performance domain, and Target.setAutoAttach for OOPIF discovery.',
     inputSchema: {
-      headless: z.boolean().optional().describe('Launch in headless mode (default: true). Set false to see the browser window.'),
-      userDataDir: z.string().optional().describe('Path to a persistent Chrome user profile directory. Useful for preserving cookies and localStorage across sessions.'),
+      headless: z
+        .boolean()
+        .optional()
+        .describe('Launch in headless mode (default: true). Set false to see the browser window.'),
+      userDataDir: z
+        .string()
+        .optional()
+        .describe(
+          'Path to a persistent Chrome user profile directory. Useful for preserving cookies and localStorage across sessions.',
+        ),
       url: z.string().url().optional().describe('URL to navigate to immediately after launch.'),
     },
   },
@@ -146,15 +163,21 @@ server.registerTool(
     }
 
     return {
-      content: [{ type: 'text', text: `${result.message} Session: ${telemetry.id}${url ? `. Navigated to ${url}` : ''}` }],
+      content: [
+        {
+          type: 'text',
+          text: `${result.message} Session: ${telemetry.id}${url ? `. Navigated to ${url}` : ''}`,
+        },
+      ],
     };
-  }
+  },
 );
 
 server.registerTool(
   'browser_close',
   {
-    description: 'Close the active browser session and release all resources. Stops any active screencast or recording.',
+    description:
+      'Close the active browser session and release all resources. Stops any active screencast or recording.',
   },
   async () => {
     if (screencast) {
@@ -173,7 +196,7 @@ server.registerTool(
       telemetry = null;
     }
     return { content: [{ type: 'text', text: result }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -184,15 +207,19 @@ server.registerTool(
       'For SPAs (React, Vue, etc.), use waitUntil="networkidle0" to wait for all async requests to complete. ' +
       'After navigation, call get_semantic_surface to perceive the new page content.',
     inputSchema: {
-      url: z.string().url().describe('The full URL to navigate to (must include protocol, e.g., https://)'),
-      waitUntil: z.enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2'])
+      url: z
+        .string()
+        .url()
+        .describe('The full URL to navigate to (must include protocol, e.g., https://)'),
+      waitUntil: z
+        .enum(['load', 'domcontentloaded', 'networkidle0', 'networkidle2'])
         .optional()
         .describe(
           'Navigation wait strategy. ' +
-          '"load" (default) waits for the window load event. ' +
-          '"networkidle0" waits until there are no network connections for 500ms — ideal for SPAs that fetch data after mount. ' +
-          '"networkidle2" allows up to 2 open connections (for long-polling/WebSocket apps). ' +
-          '"domcontentloaded" returns as soon as the DOM is parsed (fastest, but page may still be loading).'
+            '"load" (default) waits for the window load event. ' +
+            '"networkidle0" waits until there are no network connections for 500ms — ideal for SPAs that fetch data after mount. ' +
+            '"networkidle2" allows up to 2 open connections (for long-polling/WebSocket apps). ' +
+            '"domcontentloaded" returns as soon as the DOM is parsed (fastest, but page may still be loading).',
         ),
     },
   },
@@ -202,7 +229,7 @@ server.registerTool(
     requireTelemetry().addNavigation(url);
     nodeIndex.checkpoint(); // Checkpoint for delta tracking across navigations
     return { content: [{ type: 'text', text: result }] };
-  }
+  },
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -221,7 +248,7 @@ server.registerTool(
       '• dblclick — Double-click an element (useful for canvas items or file explorers).\n' +
       '• type — Focus an element and type text into it. Automatically clears existing content first.\n' +
       '• clear — Clear an input element.\n' +
-      '• hover — Move the mouse to an element\'s center to trigger hover states.\n' +
+      "• hover — Move the mouse to an element's center to trigger hover states.\n" +
       '• key — Press a keyboard key (e.g., "Enter", "Escape", "Tab", "ArrowDown").\n' +
       '• scroll — Scroll the page (direction: "up", "down", "top", "bottom").\n' +
       '• drag_and_drop — Drag an element or coordinate to another element or coordinate.\n\n' +
@@ -231,23 +258,88 @@ server.registerTool(
       'IMPORTANT: Always prefer backendNodeId from get_semantic_surface over CSS selectors or coordinates. ' +
       'backendNodeIds are assigned by the browser engine and survive React/Vue re-renders.',
     inputSchema: {
-      action: z.enum(['click', 'dblclick', 'type', 'clear', 'hover', 'key', 'scroll', 'drag_and_drop']).describe('The interaction action to perform'),
-      backendNodeId: z.number().optional().describe('The backend DOM node ID from get_semantic_surface (the [id: NNN] tag). Preferred locator.'),
-      coordinate: z.array(z.number()).length(2).optional().describe('Raw [x, y] pixel coordinates. Use for Canvas or as fallback.'),
+      action: z
+        .enum(['click', 'dblclick', 'type', 'clear', 'hover', 'key', 'scroll', 'drag_and_drop'])
+        .describe('The interaction action to perform'),
+      backendNodeId: z
+        .number()
+        .optional()
+        .describe(
+          'The backend DOM node ID from get_semantic_surface (the [id: NNN] tag). Preferred locator.',
+        ),
+      coordinate: z
+        .array(z.number())
+        .length(2)
+        .optional()
+        .describe('Raw [x, y] pixel coordinates. Use for Canvas or as fallback.'),
       text: z.string().optional().describe('Text to type (required for action="type")'),
-      key: z.string().optional().describe('Key name to press (required for action="key", e.g., "Enter", "Escape", "Tab")'),
-      clearFirst: z.boolean().optional().describe('For "type": clear the input field first (default: true)'),
-      direction: z.enum(['up', 'down', 'top', 'bottom']).optional().describe('Scroll direction (required for action="scroll")'),
+      key: z
+        .string()
+        .optional()
+        .describe('Key name to press (required for action="key", e.g., "Enter", "Escape", "Tab")'),
+      clearFirst: z
+        .boolean()
+        .optional()
+        .describe('For "type": clear the input field first (default: true)'),
+      direction: z
+        .enum(['up', 'down', 'top', 'bottom'])
+        .optional()
+        .describe('Scroll direction (required for action="scroll")'),
       amount: z.number().optional().describe('Scroll amount in pixels (default: viewport height)'),
-      timeoutMs: z.number().optional().describe('Max time in ms to wait for the element to become interactable (default: 2000)'),
-      dragToBackendNodeId: z.number().optional().describe('The backend DOM node ID to drag to (required for action="drag_and_drop" if dragToCoordinate is not provided).'),
-      dragToCoordinate: z.array(z.number()).length(2).optional().describe('Raw [x, y] pixel coordinates to drag to (required for action="drag_and_drop" if dragToBackendNodeId is not provided).'),
-      frameIndex: z.number().optional().describe('Target frame index (optional, defaults to automatic detection if backendNodeId is used).'),
-      offset: z.array(z.number()).length(2).optional().describe('Relative [dx, dy] offset from the element center in pixels. Use when center is clipped or covered.'),
-      force: z.boolean().optional().describe('If true, bypass spatial occlusion validation and force interaction at the element center (default: false).'),
+      timeoutMs: z
+        .number()
+        .optional()
+        .describe('Max time in ms to wait for the element to become interactable (default: 2000)'),
+      dragToBackendNodeId: z
+        .number()
+        .optional()
+        .describe(
+          'The backend DOM node ID to drag to (required for action="drag_and_drop" if dragToCoordinate is not provided).',
+        ),
+      dragToCoordinate: z
+        .array(z.number())
+        .length(2)
+        .optional()
+        .describe(
+          'Raw [x, y] pixel coordinates to drag to (required for action="drag_and_drop" if dragToBackendNodeId is not provided).',
+        ),
+      frameIndex: z
+        .number()
+        .optional()
+        .describe(
+          'Target frame index (optional, defaults to automatic detection if backendNodeId is used).',
+        ),
+      offset: z
+        .array(z.number())
+        .length(2)
+        .optional()
+        .describe(
+          'Relative [dx, dy] offset from the element center in pixels. Use when center is clipped or covered.',
+        ),
+      force: z
+        .boolean()
+        .optional()
+        .describe(
+          'If true, bypass spatial occlusion validation and force interaction at the element center (default: false).',
+        ),
     },
   },
-  async ({ action, backendNodeId, coordinate, text, key, clearFirst, direction, amount, timeoutMs, dragToBackendNodeId, dragToCoordinate, frameIndex, offset, force }) => {
+  async ({
+    action,
+    backendNodeId,
+    coordinate,
+    text,
+    key,
+    clearFirst,
+    direction,
+    amount,
+    timeoutMs,
+    dragToBackendNodeId,
+    dragToCoordinate,
+    frameIndex,
+    offset,
+    force,
+  }) => {
     const { page, cdp } = requireSession();
     const tel = requireTelemetry();
 
@@ -261,7 +353,9 @@ server.registerTool(
     if (frameIndex !== undefined) {
       const frames = page.frames();
       if (frameIndex < 0 || frameIndex >= frames.length) {
-        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+        throw new Error(
+          `Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`,
+        );
       }
       targetFrame = frames[frameIndex];
     } else if (backendNodeId !== undefined) {
@@ -280,7 +374,13 @@ server.registerTool(
         y = coordinate[1];
       } else if (backendNodeId !== undefined) {
         try {
-          const centerPt = await resolveElementCenter(page, cdp, backendNodeId, timeoutMs || 2000, targetFrame);
+          const centerPt = await resolveElementCenter(
+            page,
+            cdp,
+            backendNodeId,
+            timeoutMs || 2000,
+            targetFrame,
+          );
           x = centerPt.x;
           y = centerPt.y;
           if (offset) {
@@ -296,24 +396,27 @@ server.registerTool(
         try {
           const iframeHandle = await targetFrame.frameElement();
           if (iframeHandle) {
-            const size = await iframeHandle.evaluate((el: Element) => {
-              const r = el.getBoundingClientRect();
-              return { width: r.width, height: r.height };
-            }).catch(() => null);
+            const size = await iframeHandle
+              .evaluate((el: Element) => {
+                const r = el.getBoundingClientRect();
+                return { width: r.width, height: r.height };
+              })
+              .catch(() => null);
             if (size) {
               const frameOffset = await getFrameOffset(targetFrame);
-              const isInside = (
+              const isInside =
                 x >= frameOffset.x &&
                 x <= frameOffset.x + size.width &&
                 y >= frameOffset.y &&
-                y <= frameOffset.y + size.height
-              );
+                y <= frameOffset.y + size.height;
               if (!isInside) {
                 return {
-                  content: [{
-                    type: 'text',
-                    text: `Interaction failed: Calculated coordinate (${Math.round(x)}, ${Math.round(y)}) lies outside the parent iframe's visible boundaries (x: ${Math.round(frameOffset.x)}, y: ${Math.round(frameOffset.y)}, width: ${Math.round(size.width)}, height: ${Math.round(size.height)}). The iframe may be squished, clipped, or hidden by CSS layout constraints.`
-                  }]
+                  content: [
+                    {
+                      type: 'text',
+                      text: `Interaction failed: Calculated coordinate (${Math.round(x)}, ${Math.round(y)}) lies outside the parent iframe's visible boundaries (x: ${Math.round(frameOffset.x)}, y: ${Math.round(frameOffset.y)}, width: ${Math.round(size.width)}, height: ${Math.round(size.height)}). The iframe may be squished, clipped, or hidden by CSS layout constraints.`,
+                    },
+                  ],
                 };
               }
             }
@@ -329,7 +432,12 @@ server.registerTool(
         if (coordinate) {
           result = await coordinateClick(page, targetCdp, coordinate[0], coordinate[1], tel);
         } else if (backendNodeId !== undefined) {
-          result = await atomicClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
+          result = await atomicClick(page, targetCdp, backendNodeId, tel, {
+            timeoutMs,
+            offset: offset as [number, number],
+            frame: targetFrame,
+            force,
+          });
         } else {
           throw new Error('click requires either backendNodeId or coordinate.');
         }
@@ -337,7 +445,12 @@ server.registerTool(
 
       case 'dblclick':
         if (backendNodeId !== undefined) {
-          result = await atomicDoubleClick(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
+          result = await atomicDoubleClick(page, targetCdp, backendNodeId, tel, {
+            timeoutMs,
+            offset: offset as [number, number],
+            frame: targetFrame,
+            force,
+          });
         } else {
           throw new Error('dblclick requires backendNodeId.');
         }
@@ -346,13 +459,23 @@ server.registerTool(
       case 'type':
         if (!text) throw new Error('type action requires the "text" parameter.');
         if (backendNodeId !== undefined) {
-          result = await atomicType(page, targetCdp, backendNodeId, text, tel, { clearFirst, timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
+          result = await atomicType(page, targetCdp, backendNodeId, text, tel, {
+            clearFirst,
+            timeoutMs,
+            offset: offset as [number, number],
+            frame: targetFrame,
+            force,
+          });
         } else if (coordinate) {
           // Click coordinate first, then type
           await coordinateClick(page, targetCdp, coordinate[0], coordinate[1], tel);
           // Use CDP insertText for typing
           await targetCdp.send('Input.insertText', { text });
-          result = { success: true, action: 'type', feedback: `Typed "${text.substring(0, 30)}" at (${coordinate[0]}, ${coordinate[1]}).` };
+          result = {
+            success: true,
+            action: 'type',
+            feedback: `Typed "${text.substring(0, 30)}" at (${coordinate[0]}, ${coordinate[1]}).`,
+          };
         } else {
           throw new Error('type requires either backendNodeId or coordinate.');
         }
@@ -360,7 +483,12 @@ server.registerTool(
 
       case 'clear':
         if (backendNodeId !== undefined) {
-          result = await atomicClear(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
+          result = await atomicClear(page, targetCdp, backendNodeId, tel, {
+            timeoutMs,
+            offset: offset as [number, number],
+            frame: targetFrame,
+            force,
+          });
         } else {
           throw new Error('clear requires backendNodeId.');
         }
@@ -368,12 +496,23 @@ server.registerTool(
 
       case 'hover':
         if (backendNodeId !== undefined) {
-          result = await atomicHover(page, targetCdp, backendNodeId, tel, { timeoutMs, offset: offset as [number, number], frame: targetFrame, force });
+          result = await atomicHover(page, targetCdp, backendNodeId, tel, {
+            timeoutMs,
+            offset: offset as [number, number],
+            frame: targetFrame,
+            force,
+          });
         } else if (coordinate) {
           await targetCdp.send('Input.dispatchMouseEvent', {
-            type: 'mouseMoved', x: Math.round(coordinate[0]), y: Math.round(coordinate[1]),
+            type: 'mouseMoved',
+            x: Math.round(coordinate[0]),
+            y: Math.round(coordinate[1]),
           });
-          result = { success: true, action: 'hover', feedback: `Hovered at (${coordinate[0]}, ${coordinate[1]}).` };
+          result = {
+            success: true,
+            action: 'hover',
+            feedback: `Hovered at (${coordinate[0]}, ${coordinate[1]}).`,
+          };
         } else {
           throw new Error('hover requires either backendNodeId or coordinate.');
         }
@@ -389,13 +528,21 @@ server.registerTool(
         result = await atomicScroll(targetFrame, targetCdp, direction, tel, amount, backendNodeId);
         break;
 
-      case 'drag_and_drop':
+      case 'drag_and_drop': {
         // Resolve start point:
         let startPt: { x: number; y: number };
         if (coordinate) {
           startPt = { x: coordinate[0], y: coordinate[1] };
         } else if (backendNodeId !== undefined) {
-          const validation = await resolveAndValidateSpatialCoordinate(page, targetCdp, backendNodeId, timeoutMs || 2000, targetFrame, offset as [number, number], force);
+          const validation = await resolveAndValidateSpatialCoordinate(
+            page,
+            targetCdp,
+            backendNodeId,
+            timeoutMs || 2000,
+            targetFrame,
+            offset as [number, number],
+            force,
+          );
           if (!validation.valid || !validation.coordinates) {
             result = {
               success: false,
@@ -416,17 +563,24 @@ server.registerTool(
         } else if (dragToBackendNodeId !== undefined) {
           const destFrame = await findFrameForBackendNodeId(page, dragToBackendNodeId);
           const destCdp = (destFrame as any).client || cdp;
-          endPt = await resolveElementCenter(page, destCdp, dragToBackendNodeId, timeoutMs || 2000, destFrame);
+          endPt = await resolveElementCenter(
+            page,
+            destCdp,
+            dragToBackendNodeId,
+            timeoutMs || 2000,
+            destFrame,
+          );
         } else {
           throw new Error('drag_and_drop requires either dragToBackendNodeId or dragToCoordinate.');
         }
 
         result = await atomicDragAndDrop(page, targetCdp, startPt, endPt, tel);
         break;
+      }
     }
 
     return { content: [{ type: 'text', text: result?.feedback || 'Action completed.' }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -443,9 +597,22 @@ server.registerTool(
       'IMPORTANT: This is the tool that replaces framework-specific macros. Instead of using a React-specific sniffer, ' +
       'write the exact JS introspection you need. This keeps the MCP server unopinionated.',
     inputSchema: {
-      expression: z.string().optional().describe('JavaScript expression to evaluate. The result is returned as JSON. Omit to list available frames.'),
-      frameIndex: z.number().optional().describe('Frame index to evaluate in (0 = main frame). Call with no args to list available frames.'),
-      timeoutMs: z.number().optional().describe('Evaluation timeout in milliseconds (default: 5000)'),
+      expression: z
+        .string()
+        .optional()
+        .describe(
+          'JavaScript expression to evaluate. The result is returned as JSON. Omit to list available frames.',
+        ),
+      frameIndex: z
+        .number()
+        .optional()
+        .describe(
+          'Frame index to evaluate in (0 = main frame). Call with no args to list available frames.',
+        ),
+      timeoutMs: z
+        .number()
+        .optional()
+        .describe('Evaluation timeout in milliseconds (default: 5000)'),
     },
   },
   async ({ expression, frameIndex, timeoutMs }) => {
@@ -459,7 +626,7 @@ server.registerTool(
 
     const result = await evaluateInContext(page, cdp, expression, frameIndex, timeoutMs);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -477,14 +644,19 @@ server.registerTool(
     inputSchema: {
       x: z.number().describe('X coordinate to validate'),
       y: z.number().describe('Y coordinate to validate'),
-      targetBackendNodeId: z.number().optional().describe('Expected backendNodeId at this coordinate. If omitted, only bounds checking is performed.'),
+      targetBackendNodeId: z
+        .number()
+        .optional()
+        .describe(
+          'Expected backendNodeId at this coordinate. If omitted, only bounds checking is performed.',
+        ),
     },
   },
   async ({ x, y, targetBackendNodeId }) => {
     const { page, cdp } = requireSession();
     const result = await validateSpatialCoordinate(page, cdp, x, y, targetBackendNodeId);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -504,7 +676,7 @@ server.registerTool(
     const { page, cdp } = requireSession();
     const result = await coordinateClick(page, cdp, x, y, requireTelemetry());
     return { content: [{ type: 'text', text: result.feedback }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -512,7 +684,7 @@ server.registerTool(
   {
     description:
       'NON-BLOCKING VISUAL CAPTURE. Returns the latest frame from the async CDP Page.startScreencast stream. ' +
-      'Unlike browser_screenshot, this does NOT block the browser\'s main thread or force a synchronous render. ' +
+      "Unlike browser_screenshot, this does NOT block the browser's main thread or force a synchronous render. " +
       'The screencast runs continuously in the background at 60% JPEG quality.\n\n' +
       'USE CASES:\n' +
       '• Visual verification after an action without blocking the page\n' +
@@ -526,15 +698,20 @@ server.registerTool(
 
     const frame = screencast.getLatestFrame();
     if (!frame) {
-      return { content: [{ type: 'text', text: 'No screencast frame available yet. The page may not have rendered.' }] };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'No screencast frame available yet. The page may not have rendered.',
+          },
+        ],
+      };
     }
 
     return {
-      content: [
-        { type: 'image' as const, data: frame.data, mimeType: frame.mimeType },
-      ],
+      content: [{ type: 'image' as const, data: frame.data, mimeType: frame.mimeType }],
     };
-  }
+  },
 );
 
 server.registerTool(
@@ -554,7 +731,12 @@ server.registerTool(
       format: z.enum(['png', 'jpeg']).optional().describe('Image format (default: jpeg)'),
       quality: z.number().optional().describe('JPEG quality 0-100 (default: 60)'),
       savePath: z.string().optional().describe('Absolute file path to save the image'),
-      highlightNodeIds: z.array(z.number()).optional().describe('Optional list of backendNodeIds to highlight with a red border in the screenshot'),
+      highlightNodeIds: z
+        .array(z.number())
+        .optional()
+        .describe(
+          'Optional list of backendNodeIds to highlight with a red border in the screenshot',
+        ),
     },
   },
   async (args) => {
@@ -606,12 +788,14 @@ server.registerTool(
             }, id);
 
             cleanups.push(async () => {
-              await handle.evaluate((el: any, orig: any) => {
-                el.style.outline = orig.prevOutline;
-                el.style.outlineOffset = orig.prevOutlineOffset;
-                const badge = document.getElementById(orig.badgeId);
-                if (badge) badge.remove();
-              }, originalStyle).catch(() => {});
+              await handle
+                .evaluate((el: any, orig: any) => {
+                  el.style.outline = orig.prevOutline;
+                  el.style.outlineOffset = orig.prevOutlineOffset;
+                  const badge = document.getElementById(orig.badgeId);
+                  if (badge) badge.remove();
+                }, originalStyle)
+                .catch(() => {});
               await handle.dispose().catch(() => {});
             });
           }
@@ -676,10 +860,8 @@ server.registerTool(
     return {
       content: [{ type: 'image' as const, data: buffer, mimeType }],
     };
-  }
+  },
 );
-
-
 
 server.registerTool(
   'browser_start_recording',
@@ -688,7 +870,12 @@ server.registerTool(
       'Start recording screencast frames in the background to compile a video. ' +
       'Auto-stops after 5 minutes of inactivity. Call browser_stop_recording to compile and finalize.',
     inputSchema: {
-      outputDir: z.string().optional().describe('Optional directory to save frames and video (defaults to recordings/rec_<timestamp>)'),
+      outputDir: z
+        .string()
+        .optional()
+        .describe(
+          'Optional directory to save frames and video (defaults to recordings/rec_<timestamp>)',
+        ),
     },
   },
   async ({ outputDir }) => {
@@ -696,10 +883,12 @@ server.registerTool(
     if (!screencast) {
       throw new Error('Screencast not initialized. Launch browser first.');
     }
-    const resolvedOutputDir = outputDir ? resolveSafePath(outputDir) : resolveSafePath(`recordings/rec_${Date.now()}`);
+    const resolvedOutputDir = outputDir
+      ? resolveSafePath(outputDir)
+      : resolveSafePath(`recordings/rec_${Date.now()}`);
     const result = await screencast.startRecording(resolvedOutputDir);
     return { content: [{ type: 'text', text: result }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -726,7 +915,7 @@ server.registerTool(
       lines.push(`⚠ Video compilation failed (FFmpeg binary could not compile the frames).`);
     }
     return { content: [{ type: 'text', text: lines.join('\n') }] };
-  }
+  },
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -737,7 +926,7 @@ server.registerTool(
   'get_semantic_surface',
   {
     description:
-      'THE PRIMARY PERCEPTION TOOL. Queries the browser\'s native Accessibility Object Model via CDP and returns a ' +
+      "THE PRIMARY PERCEPTION TOOL. Queries the browser's native Accessibility Object Model via CDP and returns a " +
       'hyper-compressed hierarchical Markdown document — the Unified Semantic Accessibility Graph (USAG).\n\n' +
       'WHY THIS EXISTS:\n' +
       '• Raw HTML is 90% semantic noise (CSS classes, nested divs, tracking pixels). This tool strips all of it.\n' +
@@ -753,7 +942,10 @@ server.registerTool(
       '• semanticOnly=true — Aggressively prunes non-interactive structural nodes (wrapper divs). ' +
       'Use this for large pages where you only need interactive elements.',
     inputSchema: {
-      semanticOnly: z.boolean().optional().describe('Prune non-interactive structural nodes to reduce output size (default: false)'),
+      semanticOnly: z
+        .boolean()
+        .optional()
+        .describe('Prune non-interactive structural nodes to reduce output size (default: false)'),
     },
   },
   async ({ semanticOnly }) => {
@@ -764,7 +956,7 @@ server.registerTool(
 
     const result = await getSemanticSurface(page, cdp, nodeIndex, { semanticOnly });
     return { content: [{ type: 'text', text: result.markdown }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -776,8 +968,16 @@ server.registerTool(
       'Use this when you need context about a specific panel, modal, or component without fetching the entire page.',
     inputSchema: {
       backendNodeId: z.number().describe('The backend DOM node ID of the root element to inspect'),
-      semanticOnly: z.boolean().optional().describe('Filter out structural-only nodes (default: true)'),
-      frameIndex: z.number().optional().describe('Target frame index (optional, defaults to automatic detection if backendNodeId is used).'),
+      semanticOnly: z
+        .boolean()
+        .optional()
+        .describe('Filter out structural-only nodes (default: true)'),
+      frameIndex: z
+        .number()
+        .optional()
+        .describe(
+          'Target frame index (optional, defaults to automatic detection if backendNodeId is used).',
+        ),
     },
   },
   async ({ backendNodeId, semanticOnly, frameIndex }) => {
@@ -787,7 +987,9 @@ server.registerTool(
     if (frameIndex !== undefined) {
       const frames = page.frames();
       if (frameIndex < 0 || frameIndex >= frames.length) {
-        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+        throw new Error(
+          `Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`,
+        );
       }
       targetFrame = frames[frameIndex];
     } else {
@@ -800,17 +1002,20 @@ server.registerTool(
 
     let frameId: string | undefined = undefined;
     if (targetFrame !== page.mainFrame()) {
-      frameId = (targetFrame as any)._id ?? (targetFrame as any)._frameId ?? (targetFrame as any).id;
+      frameId =
+        (targetFrame as any)._id ?? (targetFrame as any)._frameId ?? (targetFrame as any).id;
     }
 
     const result = await getElementTree(cdp, nodeIndex, backendNodeId, { semanticOnly, frameId });
     return {
       content: [
         { type: 'text', text: result.text },
-        ...(result.diagnostics ? [{ type: 'text' as const, text: `Diagnostics:\n- ${result.diagnostics.join('\n- ')}` }] : []),
+        ...(result.diagnostics
+          ? [{ type: 'text' as const, text: `Diagnostics:\n- ${result.diagnostics.join('\n- ')}` }]
+          : []),
       ],
     };
-  }
+  },
 );
 
 server.registerTool(
@@ -841,17 +1046,22 @@ server.registerTool(
         for (let i = 0; i < elements.length; i++) {
           const el = elements[i];
           const style = window.getComputedStyle(el);
-          if ((style.position === 'fixed' || style.position === 'absolute') &&
-              style.display !== 'none' &&
-              style.visibility !== 'hidden' &&
-              parseFloat(style.opacity) > 0.1 &&
-              (el as HTMLElement).offsetWidth > window.innerWidth * 0.9 &&
-              (el as HTMLElement).offsetHeight > window.innerHeight * 0.9) {
+          if (
+            (style.position === 'fixed' || style.position === 'absolute') &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            parseFloat(style.opacity) > 0.1 &&
+            (el as HTMLElement).offsetWidth > window.innerWidth * 0.9 &&
+            (el as HTMLElement).offsetHeight > window.innerHeight * 0.9
+          ) {
             const zIndex = parseInt(style.zIndex || '0', 10);
             if (zIndex > 100) {
-              const selector = el.tagName.toLowerCase() + 
-                               (el.id ? '#' + el.id : '') + 
-                               (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : '');
+              const selector =
+                el.tagName.toLowerCase() +
+                (el.id ? '#' + el.id : '') +
+                (el.className && typeof el.className === 'string'
+                  ? '.' + el.className.trim().split(/\s+/).join('.')
+                  : '');
               return { selector, zIndex };
             }
           }
@@ -863,14 +1073,16 @@ server.registerTool(
         if (!summary.alerts) {
           summary.alerts = [];
         }
-        summary.alerts.push(`⚠ Full-screen blocking overlay active: <${activeOverlay.selector}> (z-index: ${activeOverlay.zIndex}). This element may intercept background interactions.`);
+        summary.alerts.push(
+          `⚠ Full-screen blocking overlay active: <${activeOverlay.selector}> (z-index: ${activeOverlay.zIndex}). This element may intercept background interactions.`,
+        );
       }
     } catch {
       // Ignore evaluation failures
     }
 
     return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -891,15 +1103,22 @@ server.registerTool(
       '• query_session_telemetry({ category: "network", filter: "status:500" }) — Get only 500 errors.\n' +
       '• query_session_telemetry({ category: "network", filter: "api/users" }) — Search by URL substring.',
     inputSchema: {
-      category: z.enum(['network', 'console', 'mutations', 'interactions', 'navigation']).describe('Telemetry category to drill into'),
-      filter: z.string().optional().describe('Filter within the category (see description for valid filter values per category)'),
+      category: z
+        .enum(['network', 'console', 'mutations', 'interactions', 'navigation'])
+        .describe('Telemetry category to drill into'),
+      filter: z
+        .string()
+        .optional()
+        .describe(
+          'Filter within the category (see description for valid filter values per category)',
+        ),
     },
   },
   async ({ category, filter }) => {
     const tel = requireTelemetry();
     const result = tel.drillDown(category, filter);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -923,7 +1142,7 @@ server.registerTool(
     const { page, cdp } = requireSession();
     const result = await getStateDelta(page, cdp, nodeIndex);
     return { content: [{ type: 'text', text: result.text }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -934,8 +1153,16 @@ server.registerTool(
       'like colors, fonts, or dimensions that are not reflected in the accessibility tree.',
     inputSchema: {
       backendNodeId: z.number().describe('The backend DOM node ID of the target element'),
-      properties: z.array(z.string()).optional().describe('Optional list of CSS properties to filter by (e.g., ["color", "font-size"])'),
-      frameIndex: z.number().optional().describe('Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)'),
+      properties: z
+        .array(z.string())
+        .optional()
+        .describe('Optional list of CSS properties to filter by (e.g., ["color", "font-size"])'),
+      frameIndex: z
+        .number()
+        .optional()
+        .describe(
+          'Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)',
+        ),
     },
   },
   async ({ backendNodeId, properties, frameIndex }) => {
@@ -945,7 +1172,9 @@ server.registerTool(
     if (frameIndex !== undefined) {
       const frames = page.frames();
       if (frameIndex < 0 || frameIndex >= frames.length) {
-        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+        throw new Error(
+          `Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`,
+        );
       }
       targetFrame = frames[frameIndex];
     } else {
@@ -953,14 +1182,16 @@ server.registerTool(
     }
 
     const targetCdp = (targetFrame as any).client || cdp;
-    
+
     await targetCdp.send('DOM.enable');
-    
-    const { object } = await targetCdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
+
+    const { object } = (await targetCdp.send('DOM.resolveNode', { backendNodeId })) as {
+      object: { objectId?: string };
+    };
     if (!object?.objectId) throw new Error(`Cannot resolve node ${backendNodeId}`);
 
     try {
-      const evalResult = await targetCdp.send('Runtime.callFunctionOn', {
+      const evalResult = (await targetCdp.send('Runtime.callFunctionOn', {
         objectId: object.objectId,
         functionDeclaration: `function(props) {
           const style = window.getComputedStyle(this);
@@ -979,14 +1210,14 @@ server.registerTool(
         }`,
         arguments: properties ? [{ value: properties }] : undefined,
         returnByValue: true,
-      }) as { result: { value: any } };
+      })) as { result: { value: any } };
 
       const styleObj = evalResult.result.value || {};
       return { content: [{ type: 'text', text: JSON.stringify(styleObj, null, 2) }] };
     } finally {
       await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
     }
-  }
+  },
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1003,7 +1234,7 @@ server.registerTool(
       '1. Call start_human_recording — browser window opens.\n' +
       '2. Human interacts with the page (reproduce a bug, navigate flows, etc.).\n' +
       '3. Call stop_human_recording — returns a synchronized, timestamped timeline of everything the human did.\n' +
-      '4. Use this timeline to understand the human\'s successful workflow and replicate it programmatically.\n\n' +
+      "4. Use this timeline to understand the human's successful workflow and replicate it programmatically.\n\n" +
       'NOTE: This closes any existing browser session and opens a new headful instance.',
     inputSchema: {
       url: z.string().optional().describe('URL to navigate to when the browser opens'),
@@ -1028,7 +1259,7 @@ server.registerTool(
     }
 
     return { content: [{ type: 'text', text: result.message }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -1043,7 +1274,7 @@ server.registerTool(
     const result = await humanRecording.stop();
     telemetry = null;
     return { content: [{ type: 'text', text: JSON.stringify(result.summary, null, 2) }] };
-  }
+  },
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1057,12 +1288,15 @@ server.registerTool(
       'Query the DOM using a CSS selector or XPath and return matching elements with their backendNodeIds, text, and bounding boxes. ' +
       'Automatically searches across all frames (pierces iframes).\n\n' +
       'PREFER get_semantic_surface for page understanding. Use this tool only when you need to find elements by a specific CSS selector ' +
-      'that the AX tree doesn\'t surface (e.g., elements with specific data-* attributes).\n\n' +
+      "that the AX tree doesn't surface (e.g., elements with specific data-* attributes).\n\n" +
       'Returns backendNodeIds that can be used directly with atomic_interact.',
     inputSchema: {
       selector: z.string().describe('CSS selector or XPath (prefix with "xpath/") to query'),
       visibleOnly: z.boolean().optional().describe('Only return visible elements (default: false)'),
-      timeoutMs: z.number().optional().describe('Wait this many ms for the element to appear (default: 0 = instant check)'),
+      timeoutMs: z
+        .number()
+        .optional()
+        .describe('Wait this many ms for the element to appear (default: 0 = instant check)'),
     },
   },
   async ({ selector, visibleOnly, timeoutMs = 0 }) => {
@@ -1070,7 +1304,12 @@ server.registerTool(
 
     const isXPath = selector.startsWith('xpath/');
 
-    const matches: { tag: string; text: string; backendNodeId: number; boundingBox: { x: number; y: number; width: number; height: number } | null }[] = [];
+    const matches: {
+      tag: string;
+      text: string;
+      backendNodeId: number;
+      boundingBox: { x: number; y: number; width: number; height: number } | null;
+    }[] = [];
     const errors: string[] = [];
 
     const startTime = Date.now();
@@ -1084,7 +1323,13 @@ server.registerTool(
         const xpathExpr = sel.slice('xpath/'.length);
         const arrayHandle = await frame.evaluateHandle((xp: string) => {
           const elements: Element[] = [];
-          const result = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          const result = document.evaluate(
+            xp,
+            document,
+            null,
+            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+            null,
+          );
           for (let i = 0; i < result.snapshotLength; i++) {
             const el = result.snapshotItem(i);
             if (el && el.nodeType === 1) elements.push(el as Element);
@@ -1116,7 +1361,10 @@ server.registerTool(
             try {
               const rect = await handle.evaluate((el: Element) => {
                 const r = el.getBoundingClientRect();
-                const visible = r.width > 0 && r.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+                const visible =
+                  r.width > 0 &&
+                  r.height > 0 &&
+                  window.getComputedStyle(el).visibility !== 'hidden';
                 return {
                   x: r.x,
                   y: r.y,
@@ -1124,7 +1372,7 @@ server.registerTool(
                   height: r.height,
                   visible,
                   tagName: el.tagName.toLowerCase(),
-                  text: (el as HTMLElement).innerText || el.textContent || ''
+                  text: (el as HTMLElement).innerText || el.textContent || '',
                 };
               });
 
@@ -1134,10 +1382,13 @@ server.registerTool(
               }
 
               const frameCdp = (frame as any).client || cdp;
-              const remoteObject = (handle as any).remoteObject?.() || (handle as any)._remoteObject;
+              const remoteObject =
+                (handle as any).remoteObject?.() || (handle as any)._remoteObject;
               let backendNodeId: number | undefined;
               if (remoteObject?.objectId) {
-                const { node } = await frameCdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
+                const { node } = await frameCdp.send('DOM.describeNode', {
+                  objectId: remoteObject.objectId,
+                });
                 backendNodeId = node.backendNodeId;
               }
 
@@ -1147,16 +1398,20 @@ server.registerTool(
                   tag: rect.tagName,
                   text: rect.text.substring(0, 200).trim(),
                   backendNodeId,
-                  boundingBox: rect.visible ? {
-                    x: rect.x + frameOffset.x,
-                    y: rect.y + frameOffset.y,
-                    width: rect.width,
-                    height: rect.height
-                  } : null
+                  boundingBox: rect.visible
+                    ? {
+                        x: rect.x + frameOffset.x,
+                        y: rect.y + frameOffset.y,
+                        width: rect.width,
+                        height: rect.height,
+                      }
+                    : null,
                 });
               }
             } catch (err) {
-              errors.push(`Frame ${frame.url()}: ${err instanceof Error ? err.message : String(err)}`);
+              errors.push(
+                `Frame ${frame.url()}: ${err instanceof Error ? err.message : String(err)}`,
+              );
             } finally {
               await handle.dispose().catch(() => {});
             }
@@ -1167,7 +1422,7 @@ server.registerTool(
       }
 
       if (matches.length > 0 || !timeoutMs || Date.now() >= deadline) break;
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 200));
     } while (Date.now() < deadline);
 
     const response: Record<string, unknown> = { matches };
@@ -1176,7 +1431,7 @@ server.registerTool(
     }
 
     return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -1190,13 +1445,19 @@ server.registerTool(
     inputSchema: {
       text: z.string().describe('The text to search for (case-insensitive fuzzy match)'),
       visibleOnly: z.boolean().optional().describe('Only return visible elements (default: true)'),
-      timeoutMs: z.number().optional().describe('Wait this many ms for the text to appear (default: 0 = instant check)'),
+      timeoutMs: z
+        .number()
+        .optional()
+        .describe('Wait this many ms for the text to appear (default: 0 = instant check)'),
     },
   },
   async ({ text, visibleOnly = true, timeoutMs = 0 }) => {
     const { page } = requireSession();
 
-    const matches: { text: string; boundingBox: { x: number; y: number; width: number; height: number } }[] = [];
+    const matches: {
+      text: string;
+      boundingBox: { x: number; y: number; width: number; height: number };
+    }[] = [];
     const errors: string[] = [];
 
     const startTime = Date.now();
@@ -1206,38 +1467,46 @@ server.registerTool(
     do {
       for (const frame of page.frames()) {
         try {
-          const frameMatches = await frame.evaluate((searchStr, reqVisible) => {
-            const results: Element[] = [];
-            
-            function walk(node: Node) {
-              if (node.nodeType === 1) { // Element
-                const el = node as Element;
-                if (reqVisible) {
-                  const style = window.getComputedStyle(el);
-                  if (style.display === 'none' || style.visibility === 'hidden') return;
-                }
-                if (el.shadowRoot) walk(el.shadowRoot);
-                for (let i = 0; i < el.childNodes.length; i++) walk(el.childNodes[i]);
-              } else if (node.nodeType === 3) { // Text
-                if (node.textContent && node.textContent.toLowerCase().includes(searchStr)) {
-                  if (node.parentElement && !results.includes(node.parentElement)) {
-                    results.push(node.parentElement);
+          const frameMatches = await frame.evaluate(
+            (searchStr, reqVisible) => {
+              const results: Element[] = [];
+
+              function walk(node: Node) {
+                if (node.nodeType === 1) {
+                  // Element
+                  const el = node as Element;
+                  if (reqVisible) {
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden') return;
+                  }
+                  if (el.shadowRoot) walk(el.shadowRoot);
+                  for (let i = 0; i < el.childNodes.length; i++) walk(el.childNodes[i]);
+                } else if (node.nodeType === 3) {
+                  // Text
+                  if (node.textContent && node.textContent.toLowerCase().includes(searchStr)) {
+                    if (node.parentElement && !results.includes(node.parentElement)) {
+                      results.push(node.parentElement);
+                    }
                   }
                 }
               }
-            }
-            
-            walk(document.body || document.documentElement);
-            
-            return results.map(el => {
-              const rect = el.getBoundingClientRect();
-              return {
-                text: ((el as HTMLElement).innerText || el.textContent || '').substring(0, 200).trim(),
-                visible: rect.width > 0 && rect.height > 0,
-                boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-              };
-            });
-          }, searchText, visibleOnly);
+
+              walk(document.body || document.documentElement);
+
+              return results.map((el) => {
+                const rect = el.getBoundingClientRect();
+                return {
+                  text: ((el as HTMLElement).innerText || el.textContent || '')
+                    .substring(0, 200)
+                    .trim(),
+                  visible: rect.width > 0 && rect.height > 0,
+                  boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                };
+              });
+            },
+            searchText,
+            visibleOnly,
+          );
 
           const offset = await getFrameOffset(frame);
           for (const m of frameMatches) {
@@ -1258,7 +1527,7 @@ server.registerTool(
       }
 
       if (matches.length > 0 || !timeoutMs || Date.now() >= deadline) break;
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 200));
     } while (Date.now() < deadline);
 
     const response: Record<string, unknown> = { matches };
@@ -1267,7 +1536,7 @@ server.registerTool(
     }
 
     return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -1290,9 +1559,14 @@ server.registerTool(
 
     if (backendNodeId) {
       const frame = page.mainFrame() as unknown as {
-        mainRealm(): { adoptBackendNode(id: number): Promise<import('puppeteer-core').ElementHandle<Element>> };
+        mainRealm(): {
+          adoptBackendNode(id: number): Promise<import('puppeteer-core').ElementHandle<Element>>;
+        };
       };
-      targetEl = await frame.mainRealm().adoptBackendNode(backendNodeId).catch(() => null);
+      targetEl = await frame
+        .mainRealm()
+        .adoptBackendNode(backendNodeId)
+        .catch(() => null);
     } else if (selector) {
       for (const frame of page.frames()) {
         targetEl = await frame.$(selector);
@@ -1311,17 +1585,22 @@ server.registerTool(
         try {
           const { node } = await cdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
           resolvedBackendNodeId = node.backendNodeId;
-        } catch { /* best effort */ }
+        } catch {
+          /* best effort */
+        }
       }
     }
 
     const result = await targetEl.evaluate((el: Element) => {
       const htmlEl = el as HTMLElement;
       const rect = el.getBoundingClientRect();
-      const visible = rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
-      const disabled = (htmlEl as any).disabled === true || el.getAttribute('aria-disabled') === 'true';
+      const visible =
+        rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+      const disabled =
+        (htmlEl as any).disabled === true || el.getAttribute('aria-disabled') === 'true';
       const text = htmlEl.innerText || el.textContent || '';
-      const isCheckbox = el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.getAttribute('type') || '');
+      const isCheckbox =
+        el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.getAttribute('type') || '');
       const checked = isCheckbox ? (htmlEl as HTMLInputElement).checked : undefined;
       return { visible, disabled, text: text.trim(), checked };
     });
@@ -1329,9 +1608,14 @@ server.registerTool(
     await targetEl.dispose().catch(() => {});
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ...result, backendNodeId: resolvedBackendNodeId }, null, 2) }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ ...result, backendNodeId: resolvedBackendNodeId }, null, 2),
+        },
+      ],
     };
-  }
+  },
 );
 
 server.registerTool(
@@ -1367,18 +1651,34 @@ server.registerTool(
       }
     } else {
       const storageObj = type;
-      const result = await page.evaluate((act, store, k, v) => {
-        const s = window[store as 'localStorage' | 'sessionStorage'];
-        if (act === 'clear') { s.clear(); return `${store} cleared.`; }
-        if (act === 'get') return JSON.stringify(Object.fromEntries(Object.entries(s)));
-        if (act === 'set' && k && v) { s.setItem(k, v); return `${store}["${k}"] set.`; }
-        return 'Invalid operation.';
-      }, action, storageObj, key, value);
-      return { content: [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }] };
+      const result = await page.evaluate(
+        (act, store, k, v) => {
+          const s = window[store as 'localStorage' | 'sessionStorage'];
+          if (act === 'clear') {
+            s.clear();
+            return `${store} cleared.`;
+          }
+          if (act === 'get') return JSON.stringify(Object.fromEntries(Object.entries(s)));
+          if (act === 'set' && k && v) {
+            s.setItem(k, v);
+            return `${store}["${k}"] set.`;
+          }
+          return 'Invalid operation.';
+        },
+        action,
+        storageObj,
+        key,
+        value,
+      );
+      return {
+        content: [
+          { type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) },
+        ],
+      };
     }
 
     return { content: [{ type: 'text', text: 'Invalid storage operation.' }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -1400,9 +1700,14 @@ server.registerTool(
       uploadThroughput: -1,
     });
     return {
-      content: [{ type: 'text', text: offline ? 'Network set to offline mode.' : 'Network restored to online mode.' }],
+      content: [
+        {
+          type: 'text',
+          text: offline ? 'Network set to offline mode.' : 'Network restored to online mode.',
+        },
+      ],
     };
-  }
+  },
 );
 
 server.registerTool(
@@ -1426,9 +1731,14 @@ server.registerTool(
       uploadThroughput: uploadKbps > 0 ? uploadKbps * 125 : -1,
     });
     return {
-      content: [{ type: 'text', text: `Network throttled: ${latencyMs}ms latency, ${downloadKbps}Kbps down, ${uploadKbps}Kbps up.` }],
+      content: [
+        {
+          type: 'text',
+          text: `Network throttled: ${latencyMs}ms latency, ${downloadKbps}Kbps down, ${uploadKbps}Kbps up.`,
+        },
+      ],
     };
-  }
+  },
 );
 
 server.registerTool(
@@ -1439,16 +1749,28 @@ server.registerTool(
       'Uses CDP Fetch domain for precise request-level control.',
     inputSchema: {
       pattern: z.string().describe('URL glob pattern to match (e.g., "*api*", "*graphql*")'),
-      action: z.enum(['delay', 'fail', 'mock']).describe('"delay" = add latency, "fail" = reject the request, "mock" = inject custom mock response'),
+      action: z
+        .enum(['delay', 'fail', 'mock'])
+        .describe(
+          '"delay" = add latency, "fail" = reject the request, "mock" = inject custom mock response',
+        ),
       delayMs: z.number().optional().describe('Delay in ms (required for action="delay")'),
-      mockResponse: z.object({
-        status: z.number().describe('HTTP status code (e.g. 200)'),
-        headers: z.array(z.object({
-          name: z.string(),
-          value: z.string(),
-        })).optional().describe('HTTP response headers'),
-        body: z.string().describe('Response body string'),
-      }).optional().describe('Mock response configuration (required for action="mock")'),
+      mockResponse: z
+        .object({
+          status: z.number().describe('HTTP status code (e.g. 200)'),
+          headers: z
+            .array(
+              z.object({
+                name: z.string(),
+                value: z.string(),
+              }),
+            )
+            .optional()
+            .describe('HTTP response headers'),
+          body: z.string().describe('Response body string'),
+        })
+        .optional()
+        .describe('Mock response configuration (required for action="mock")'),
     },
   },
   async ({ pattern, action, delayMs, mockResponse }) => {
@@ -1463,7 +1785,9 @@ server.registerTool(
 
     fetchInterceptHandler = async (event: { requestId: string }) => {
       if (action === 'fail') {
-        await cdp.send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'Failed' }).catch(() => {});
+        await cdp
+          .send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'Failed' })
+          .catch(() => {});
       } else if (action === 'delay' && delayMs) {
         setTimeout(async () => {
           await cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
@@ -1471,12 +1795,14 @@ server.registerTool(
       } else if (action === 'mock' && mockResponse) {
         const base64Body = Buffer.from(mockResponse.body).toString('base64');
         const headers = mockResponse.headers || [];
-        await cdp.send('Fetch.fulfillRequest', {
-          requestId: event.requestId,
-          responseCode: mockResponse.status,
-          responseHeaders: headers,
-          body: base64Body,
-        }).catch(() => {});
+        await cdp
+          .send('Fetch.fulfillRequest', {
+            requestId: event.requestId,
+            responseCode: mockResponse.status,
+            responseHeaders: headers,
+            body: base64Body,
+          })
+          .catch(() => {});
       } else {
         await cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
       }
@@ -1484,8 +1810,15 @@ server.registerTool(
 
     cdp.on('Fetch.requestPaused', fetchInterceptHandler);
 
-    return { content: [{ type: 'text', text: `Interception enabled: ${pattern} → ${action}${delayMs ? ` (${delayMs}ms)` : ''}` }] };
-  }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Interception enabled: ${pattern} → ${action}${delayMs ? ` (${delayMs}ms)` : ''}`,
+        },
+      ],
+    };
+  },
 );
 
 server.registerTool(
@@ -1501,7 +1834,7 @@ server.registerTool(
       fetchInterceptHandler = null;
     }
     return { content: [{ type: 'text', text: 'Request interception disabled.' }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -1511,8 +1844,13 @@ server.registerTool(
       'Mock, freeze, or shift browser time for deterministic testing. Overrides Date, Date.now(), and performance.now(). ' +
       'Persists across page navigations.',
     inputSchema: {
-      mode: z.enum(['freeze', 'travel', 'reset']).describe('"freeze" = stop time, "travel" = offset time, "reset" = restore native time'),
-      isoDate: z.string().optional().describe('ISO 8601 date for freeze mode (e.g., "2025-01-01T00:00:00Z")'),
+      mode: z
+        .enum(['freeze', 'travel', 'reset'])
+        .describe('"freeze" = stop time, "travel" = offset time, "reset" = restore native time'),
+      isoDate: z
+        .string()
+        .optional()
+        .describe('ISO 8601 date for freeze mode (e.g., "2025-01-01T00:00:00Z")'),
       deltaMs: z.number().optional().describe('Millisecond offset for travel mode'),
     },
   },
@@ -1533,8 +1871,9 @@ server.registerTool(
       return { content: [{ type: 'text', text: 'Time mocking reset.' }] };
     }
 
-    const script = mode === 'freeze'
-      ? `(() => {
+    const script =
+      mode === 'freeze'
+        ? `(() => {
           if (!window.__mcp_original_Date) window.__mcp_original_Date = window.Date;
           if (!window.__mcp_original_performance_now) window.__mcp_original_performance_now = performance.now.bind(performance);
           const frozenTime = ${isoDate ? `new window.__mcp_original_Date('${isoDate}').getTime()` : 'window.__mcp_original_Date.now()'};
@@ -1544,7 +1883,7 @@ server.registerTool(
           M.prototype = O.prototype; M.now = () => frozenTime; M.parse = O.parse; M.UTC = O.UTC;
           window.Date = M; performance.now = () => frozenPerf;
         })()`
-      : `(() => {
+        : `(() => {
           if (!window.__mcp_original_Date) window.__mcp_original_Date = window.Date;
           if (!window.__mcp_original_performance_now) window.__mcp_original_performance_now = performance.now.bind(performance);
           const d = ${deltaMs || 0}; const O = window.__mcp_original_Date;
@@ -1557,9 +1896,17 @@ server.registerTool(
     await page.evaluateOnNewDocument(script);
 
     return {
-      content: [{ type: 'text', text: mode === 'freeze' ? `Time frozen at ${isoDate || 'current time'}.` : `Time shifted by ${deltaMs}ms.` }],
+      content: [
+        {
+          type: 'text',
+          text:
+            mode === 'freeze'
+              ? `Time frozen at ${isoDate || 'current time'}.`
+              : `Time shifted by ${deltaMs}ms.`,
+        },
+      ],
     };
-  }
+  },
 );
 
 server.registerTool(
@@ -1575,7 +1922,13 @@ server.registerTool(
   async ({ maxSteps = 20 }) => {
     const { page, cdp } = requireSession();
 
-    const focusFlow: { step: number; tag: string; role: string; name: string; backendNodeId: number }[] = [];
+    const focusFlow: {
+      step: number;
+      tag: string;
+      role: string;
+      name: string;
+      backendNodeId: number;
+    }[] = [];
     const focusTraps: string[] = [];
     const seen = new Map<string, number>();
 
@@ -1586,15 +1939,20 @@ server.registerTool(
 
     for (let step = 1; step <= maxSteps; step++) {
       await page.keyboard.press('Tab');
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
 
       const info = await page.evaluate(() => {
         const el = document.activeElement;
-        if (!el || el === document.body) return { tag: 'body', role: '', name: '', fingerprint: 'body' };
+        if (!el || el === document.body)
+          return { tag: 'body', role: '', name: '', fingerprint: 'body' };
         return {
           tag: el.tagName.toLowerCase(),
           role: el.getAttribute('role') || el.tagName.toLowerCase(),
-          name: el.getAttribute('aria-label') || el.getAttribute('title') || (el as HTMLElement).innerText?.substring(0, 50)?.trim() || '',
+          name:
+            el.getAttribute('aria-label') ||
+            el.getAttribute('title') ||
+            (el as HTMLElement).innerText?.substring(0, 50)?.trim() ||
+            '',
           fingerprint: `${el.tagName}#${el.id}.${el.className}`,
         };
       });
@@ -1608,14 +1966,18 @@ server.registerTool(
           backendNodeId = node.backendNodeId;
         }
         await handle.dispose().catch(() => {});
-      } catch { /* continue */ }
+      } catch {
+        /* continue */
+      }
 
       focusFlow.push({ step, tag: info.tag, role: info.role, name: info.name, backendNodeId });
 
       if (seen.has(info.fingerprint)) {
         const firstStep = seen.get(info.fingerprint)!;
         if (step - firstStep < maxSteps - 1) {
-          focusTraps.push(`Focus trap: <${info.tag}> at step ${step} was at step ${firstStep} (cycle: ${step - firstStep})`);
+          focusTraps.push(
+            `Focus trap: <${info.tag}> at step ${step} was at step ${firstStep} (cycle: ${step - firstStep})`,
+          );
         }
         break;
       }
@@ -1623,8 +1985,15 @@ server.registerTool(
       if (info.tag === 'body') break;
     }
 
-    return { content: [{ type: 'text', text: JSON.stringify({ focusFlow, focusTraps, totalSteps: focusFlow.length }, null, 2) }] };
-  }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ focusFlow, focusTraps, totalSteps: focusFlow.length }, null, 2),
+        },
+      ],
+    };
+  },
 );
 
 server.registerTool(
@@ -1642,20 +2011,20 @@ server.registerTool(
     const { cdp } = requireSession();
 
     try {
-      const nodeResult = await cdp.send('DOM.getNodeForLocation', {
+      const nodeResult = (await cdp.send('DOM.getNodeForLocation', {
         x: Math.round(x),
         y: Math.round(y),
         includeUserAgentShadowDOM: false,
-      }) as { backendNodeId: number; frameId?: string; nodeId?: number };
+      })) as { backendNodeId: number; frameId?: string; nodeId?: number };
 
-      const { object } = await cdp.send('DOM.resolveNode', {
+      const { object } = (await cdp.send('DOM.resolveNode', {
         backendNodeId: nodeResult.backendNodeId,
-      }) as { object: { objectId?: string } };
+      })) as { object: { objectId?: string } };
 
       let details: any = { backendNodeId: nodeResult.backendNodeId };
 
       if (object?.objectId) {
-        const result = await cdp.send('Runtime.callFunctionOn', {
+        const result = (await cdp.send('Runtime.callFunctionOn', {
           objectId: object.objectId,
           functionDeclaration: `function() {
             return {
@@ -1666,16 +2035,23 @@ server.registerTool(
             };
           }`,
           returnByValue: true,
-        }) as { result: { value: unknown } };
+        })) as { result: { value: unknown } };
         details = { ...details, ...(result.result.value as object) };
         await cdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
       }
 
       return { content: [{ type: 'text', text: JSON.stringify(details, null, 2) }] };
     } catch (err) {
-      return { content: [{ type: 'text', text: `No element found at (${x}, ${y}): ${err instanceof Error ? err.message : String(err)}` }] };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `No element found at (${x}, ${y}): ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      };
     }
-  }
+  },
 );
 
 server.registerTool(
@@ -1686,7 +2062,12 @@ server.registerTool(
       'Useful for understanding interactive behavior before dispatching events.',
     inputSchema: {
       backendNodeId: z.number().describe('Backend DOM node ID of the element'),
-      frameIndex: z.number().optional().describe('Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)'),
+      frameIndex: z
+        .number()
+        .optional()
+        .describe(
+          'Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)',
+        ),
     },
   },
   async ({ backendNodeId, frameIndex }) => {
@@ -1696,7 +2077,9 @@ server.registerTool(
     if (frameIndex !== undefined) {
       const frames = page.frames();
       if (frameIndex < 0 || frameIndex >= frames.length) {
-        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+        throw new Error(
+          `Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`,
+        );
       }
       targetFrame = frames[frameIndex];
     } else {
@@ -1705,28 +2088,33 @@ server.registerTool(
 
     const targetCdp = (targetFrame as any).client || cdp;
 
-    const { object } = await targetCdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
+    const { object } = (await targetCdp.send('DOM.resolveNode', { backendNodeId })) as {
+      object: { objectId?: string };
+    };
     if (!object?.objectId) throw new Error(`Cannot resolve node ${backendNodeId}`);
 
     try {
-      const response = await targetCdp.send('DOMDebugger.getEventListeners', { objectId: object.objectId });
+      const response = await targetCdp.send('DOMDebugger.getEventListeners', {
+        objectId: object.objectId,
+      });
       return { content: [{ type: 'text', text: JSON.stringify(response.listeners, null, 2) }] };
     } finally {
       await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
     }
-  }
+  },
 );
 
 server.registerTool(
   'browser_get_performance_metrics',
   {
-    description: 'Get Chromium internal performance and rendering metrics (Nodes, JSHeapUsedSize, LayoutCount, etc.).',
+    description:
+      'Get Chromium internal performance and rendering metrics (Nodes, JSHeapUsedSize, LayoutCount, etc.).',
   },
   async () => {
     const { cdp } = requireSession();
     const response = await cdp.send('Performance.getMetrics');
     return { content: [{ type: 'text', text: JSON.stringify(response.metrics, null, 2) }] };
-  }
+  },
 );
 
 server.registerTool(
@@ -1739,9 +2127,24 @@ server.registerTool(
       'Use this tool ONLY for debugging perception failures.\\n\\n' +
       'The output is truncated to maxLength characters (default: 5000) to protect your context window.',
     inputSchema: {
-      backendNodeId: z.number().optional().describe('Backend node ID of the element. Omit to get document.documentElement.outerHTML.'),
-      maxLength: z.number().optional().describe('Truncate HTML output to this many characters (default: 5000). Set higher for full inspection.'),
-      frameIndex: z.number().optional().describe('Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)'),
+      backendNodeId: z
+        .number()
+        .optional()
+        .describe(
+          'Backend node ID of the element. Omit to get document.documentElement.outerHTML.',
+        ),
+      maxLength: z
+        .number()
+        .optional()
+        .describe(
+          'Truncate HTML output to this many characters (default: 5000). Set higher for full inspection.',
+        ),
+      frameIndex: z
+        .number()
+        .optional()
+        .describe(
+          'Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)',
+        ),
     },
   },
   async ({ backendNodeId, maxLength = 5000, frameIndex }) => {
@@ -1751,7 +2154,9 @@ server.registerTool(
     if (frameIndex !== undefined) {
       const frames = page.frames();
       if (frameIndex < 0 || frameIndex >= frames.length) {
-        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+        throw new Error(
+          `Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`,
+        );
       }
       targetFrame = frames[frameIndex];
     } else if (backendNodeId !== undefined) {
@@ -1764,36 +2169,45 @@ server.registerTool(
 
     if (backendNodeId !== undefined) {
       // Get outerHTML of a specific node via target frame's CDP
-      const { object } = await targetCdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
-      if (!object?.objectId) throw new Error(`Cannot resolve node ${backendNodeId}. It may have been destroyed by a re-render.`);
+      const { object } = (await targetCdp.send('DOM.resolveNode', { backendNodeId })) as {
+        object: { objectId?: string };
+      };
+      if (!object?.objectId)
+        throw new Error(
+          `Cannot resolve node ${backendNodeId}. It may have been destroyed by a re-render.`,
+        );
 
       try {
-        const result = await targetCdp.send('Runtime.callFunctionOn', {
+        const result = (await targetCdp.send('Runtime.callFunctionOn', {
           objectId: object.objectId,
           functionDeclaration: `function() { return this.outerHTML; }`,
           returnByValue: true,
-        }) as { result: { value: unknown } };
+        })) as { result: { value: unknown } };
         html = String(result.result.value || '');
       } finally {
-        await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+        await targetCdp
+          .send('Runtime.releaseObject', { objectId: object.objectId })
+          .catch(() => {});
       }
     } else {
       // Get the document root of the target frame
-      html = await targetFrame.evaluate(() => document.documentElement.outerHTML) as string;
+      html = (await targetFrame.evaluate(() => document.documentElement.outerHTML)) as string;
     }
 
     const truncated = html.length > maxLength;
     const output = truncated ? html.substring(0, maxLength) : html;
 
     return {
-      content: [{
-        type: 'text',
-        text: truncated
-          ? `${output}\n\n--- TRUNCATED (${html.length} chars total, showing first ${maxLength}). Increase maxLength to see more. ---`
-          : output,
-      }],
+      content: [
+        {
+          type: 'text',
+          text: truncated
+            ? `${output}\n\n--- TRUNCATED (${html.length} chars total, showing first ${maxLength}). Increase maxLength to see more. ---`
+            : output,
+        },
+      ],
     };
-  }
+  },
 );
 
 // ─── Server Boot ────────────────────────────────────────────────────────────

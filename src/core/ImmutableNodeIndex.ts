@@ -64,7 +64,7 @@ export class ImmutableNodeIndex {
       const childStableIds: number[] = [];
       if (node.childIds) {
         for (const childNodeId of node.childIds) {
-          const childNode = nodes.find(n => n.nodeId === childNodeId);
+          const childNode = nodes.find((n) => n.nodeId === childNodeId);
           if (childNode?.backendDOMNodeId && this.nodeMap.has(childNode.backendDOMNodeId)) {
             childStableIds.push(this.nodeMap.get(childNode.backendDOMNodeId)!);
           }
@@ -77,7 +77,9 @@ export class ImmutableNodeIndex {
         role: node.role?.value || 'generic',
         name: node.name?.value || '',
         value: typeof node.value?.value === 'string' ? node.value.value : undefined,
-        properties: node.properties ? node.properties.map(p => ({ name: p.name, value: p.value.value })) : undefined,
+        properties: node.properties
+          ? node.properties.map((p) => ({ name: p.name, value: p.value.value }))
+          : undefined,
         childIds: childStableIds,
       });
     }
@@ -123,7 +125,10 @@ export class ImmutableNodeIndex {
 
     const added: NodeSnapshot[] = [];
     const removed: { stableId: number; role: string; name: string }[] = [];
-    const modified: { stableId: number; changes: Record<string, { previous: unknown; current: unknown }> }[] = [];
+    const modified: {
+      stableId: number;
+      changes: Record<string, { previous: unknown; current: unknown }>;
+    }[] = [];
 
     // Find added and modified nodes
     for (const [stableId, current] of this.snapshotMap) {

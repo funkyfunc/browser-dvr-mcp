@@ -13,7 +13,10 @@ const __dirname = dirname(__filename);
 
 export class WorkerBridge {
   private worker: Worker;
-  private pendingRequests = new Map<string, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
+  private pendingRequests = new Map<
+    string,
+    { resolve: (value: unknown) => void; reject: (reason: unknown) => void }
+  >();
   private requestCounter = 0;
 
   constructor() {
@@ -26,7 +29,9 @@ export class WorkerBridge {
     // Fail fast if neither file exists (happens in esbuild --bundle builds
     // where the worker is inlined into the main bundle)
     if (!existsSync(workerPath)) {
-      throw new Error(`Serialization worker not found at ${workerPath}. DVR frame buffering unavailable.`);
+      throw new Error(
+        `Serialization worker not found at ${workerPath}. DVR frame buffering unavailable.`,
+      );
     }
 
     this.worker = new Worker(workerPath, {

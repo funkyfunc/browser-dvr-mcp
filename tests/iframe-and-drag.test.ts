@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'fs';
-import { findFrameForBackendNodeId, atomicDragAndDrop, atomicClick } from '../src/layer1/atomicInteract.js';
+import {
+  findFrameForBackendNodeId,
+  atomicDragAndDrop,
+  atomicClick,
+} from '../src/layer1/atomicInteract.js';
 import { getSemanticSurface } from '../src/layer2/semanticSurface.js';
 import { ImmutableNodeIndex } from '../src/core/ImmutableNodeIndex.js';
 import { validateSpatialCoordinate } from '../src/layer1/spatialValidation.js';
@@ -19,7 +23,6 @@ function findChrome() {
 }
 
 describe('Iframe & Drag Integration Tests', () => {
-
   // ── Test 1: Iframe Auto-Detection and Event Routing ────────────────────────
   it('should auto-detect frame and successfully trigger click event inside iframe', async () => {
     const browser = await puppeteer.launch({
@@ -27,7 +30,7 @@ describe('Iframe & Drag Integration Tests', () => {
       headless: true,
     });
     const page = await browser.newPage();
-    
+
     await page.setContent(`
       <body style="margin: 0; padding: 0;">
         <div style="height: 100px; background: lightblue;">Spacer</div>
@@ -39,13 +42,13 @@ describe('Iframe & Drag Integration Tests', () => {
       </body>
     `);
 
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
 
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
 
-    const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
-    
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
+
     let btnBackendNodeId: number | null = null;
     const findTarget = (node: any) => {
       if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('btn')) {
@@ -73,13 +76,21 @@ describe('Iframe & Drag Integration Tests', () => {
 
     // Dispatch click using target frame session at global coordinates (100, 175)
     await targetCdp.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed', x: 100, y: 175, button: 'left', clickCount: 1,
+      type: 'mousePressed',
+      x: 100,
+      y: 175,
+      button: 'left',
+      clickCount: 1,
     });
     await targetCdp.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased', x: 100, y: 175, button: 'left', clickCount: 1,
+      type: 'mouseReleased',
+      x: 100,
+      y: 175,
+      button: 'left',
+      clickCount: 1,
     });
 
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
     const clicked = await frame.evaluate('window.clicked');
     expect(clicked).toBe(true);
 
@@ -93,7 +104,7 @@ describe('Iframe & Drag Integration Tests', () => {
       headless: true,
     });
     const page = await browser.newPage();
-    
+
     await page.setContent(`
       <body style="margin: 0; padding: 0;">
         <div id="drag-source" style="width: 50px; height: 50px; background: blue; position: absolute; left: 10px; top: 10px; user-select: none;">Source</div>
@@ -126,13 +137,13 @@ describe('Iframe & Drag Integration Tests', () => {
 
     await atomicDragAndDrop(page, cdp, { x: 35, y: 35 }, { x: 235, y: 85 }, dummyTelemetry);
 
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
 
     const rect = await page.evaluate(() => {
       const source = document.getElementById('drag-source')!;
       return {
         left: parseInt(source.style.left || '0', 10),
-        top: parseInt(source.style.top || '0', 10)
+        top: parseInt(source.style.top || '0', 10),
       };
     });
 
@@ -149,7 +160,7 @@ describe('Iframe & Drag Integration Tests', () => {
       headless: true,
     });
     const page = await browser.newPage();
-    
+
     // Set a page with a small iframe, hosting a button placed far to the right (clipped/out-of-bounds)
     await page.setContent(`
       <body style="margin: 0; padding: 0;">
@@ -161,13 +172,13 @@ describe('Iframe & Drag Integration Tests', () => {
       </body>
     `);
 
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 1000));
 
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
 
-    const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
-    
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
+
     let btnBackendNodeId: number | null = null;
     const findTarget = (node: any) => {
       if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('btn')) {
@@ -197,12 +208,11 @@ describe('Iframe & Drag Integration Tests', () => {
     // Button resolved center is around x = 225, y = 25
     // But the iframe right boundary is at x = 100
     const btnCenter = { x: 225, y: 25 };
-    const isInside = (
+    const isInside =
       btnCenter.x >= iframeBox!.x &&
       btnCenter.x <= iframeBox!.x + iframeBox!.width &&
       btnCenter.y >= iframeBox!.y &&
-      btnCenter.y <= iframeBox!.y + iframeBox!.height
-    );
+      btnCenter.y <= iframeBox!.y + iframeBox!.height;
 
     expect(isInside).toBe(false);
 
@@ -216,7 +226,7 @@ describe('Iframe & Drag Integration Tests', () => {
       headless: true,
     });
     const page = await browser.newPage();
-    
+
     // Set up a page with a plain div styled with interactive grab cursor, and one normal button
     // The div is completely empty, ensuring it gets pruned by default AX tree builders
     await page.setContent(`
@@ -226,7 +236,7 @@ describe('Iframe & Drag Integration Tests', () => {
       </body>
     `);
 
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 500));
 
     const cdp = await page.createCDPSession();
     const nodeIndex = new ImmutableNodeIndex();
@@ -263,8 +273,8 @@ describe('Iframe & Drag Integration Tests', () => {
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
 
-    const doc = await cdp.send('DOM.getDocument', { depth: -1 }) as any;
-    
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1 })) as any;
+
     let btnBackendNodeId: number | null = null;
     const findTarget = (node: any) => {
       if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('btn')) {
@@ -313,8 +323,8 @@ describe('Iframe & Drag Integration Tests', () => {
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
 
-    const doc = await cdp.send('DOM.getDocument', { depth: -1 }) as any;
-    
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1 })) as any;
+
     let targetBackendNodeId: number | null = null;
     const findTarget = (node: any) => {
       if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('target-btn')) {
@@ -341,7 +351,9 @@ describe('Iframe & Drag Integration Tests', () => {
 
     // With offset: offset [30, 0] shifts click to (80, 50), which is uncovered, and click succeeds!
     await page.evaluate('window.clicked = false');
-    const successResult = await atomicClick(page, cdp, targetBackendNodeId!, dummyTelemetry, { offset: [30, 0] });
+    const successResult = await atomicClick(page, cdp, targetBackendNodeId!, dummyTelemetry, {
+      offset: [30, 0],
+    });
     expect(successResult.success).toBe(true);
 
     const isClicked = await page.evaluate('window.clicked');

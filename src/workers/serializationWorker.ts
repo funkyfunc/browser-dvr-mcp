@@ -72,9 +72,23 @@ function serializeAXTreeToMarkdown(nodes: AXNodeInput[], semanticOnly: boolean):
       node.name?.value ||
       node.description?.value ||
       node.value?.value !== undefined ||
-      ['button', 'link', 'textbox', 'checkbox', 'heading', 'menuitem',
-       'tab', 'combobox', 'listbox', 'radio', 'switch', 'slider',
-       'progressbar', 'img', 'alert'].includes(role);
+      [
+        'button',
+        'link',
+        'textbox',
+        'checkbox',
+        'heading',
+        'menuitem',
+        'tab',
+        'combobox',
+        'listbox',
+        'radio',
+        'switch',
+        'slider',
+        'progressbar',
+        'img',
+        'alert',
+      ].includes(role);
 
     let renderThis = hasContent;
 
@@ -104,7 +118,8 @@ function serializeAXTreeToMarkdown(nodes: AXNodeInput[], semanticOnly: boolean):
           else if (prop.name === 'disabled' && prop.value.value) props.push('disabled');
           else if (prop.name === 'focused' && prop.value.value) props.push('focused');
           else if (prop.name === 'required' && prop.value.value) props.push('required');
-          else if (prop.name === 'expanded') props.push(prop.value.value ? 'expanded' : 'collapsed');
+          else if (prop.name === 'expanded')
+            props.push(prop.value.value ? 'expanded' : 'collapsed');
           else if (prop.name === 'selected' && prop.value.value) props.push('selected');
         }
       }
@@ -140,11 +155,14 @@ interface SnapshotNode {
 
 function computeStateDelta(
   previous: Record<string, SnapshotNode>,
-  current: Record<string, SnapshotNode>
+  current: Record<string, SnapshotNode>,
 ): unknown {
   const added: SnapshotNode[] = [];
   const removed: { stableId: number; role: string; name: string }[] = [];
-  const modified: { stableId: number; changes: Record<string, { previous: unknown; current: unknown }> }[] = [];
+  const modified: {
+    stableId: number;
+    changes: Record<string, { previous: unknown; current: unknown }>;
+  }[] = [];
 
   for (const [id, curr] of Object.entries(current)) {
     const prev = previous[id];
@@ -181,7 +199,7 @@ let frames: Frame[] = [];
 
 setInterval(() => {
   const cutoff = Date.now() - 10000; // 10-second rolling window
-  frames = frames.filter(f => f.timestamp >= cutoff);
+  frames = frames.filter((f) => f.timestamp >= cutoff);
 }, 1000);
 
 // ─── Message Handler ────────────────────────────────────────────────────────

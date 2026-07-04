@@ -30,10 +30,12 @@ export async function getFrameOffset(frame: Frame): Promise<{ x: number; y: numb
 
     const frameElement = await currentFrame.frameElement();
     if (frameElement) {
-      const rect = await frameElement.evaluate((el: Element) => {
-        const r = el.getBoundingClientRect();
-        return { x: r.x, y: r.y };
-      }).catch(() => null);
+      const rect = await frameElement
+        .evaluate((el: Element) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y };
+        })
+        .catch(() => null);
       if (rect) {
         offsetX += rect.x;
         offsetY += rect.y;
@@ -54,7 +56,7 @@ export async function validateSpatialCoordinate(
   x: number,
   y: number,
   targetBackendNodeId?: number,
-  frame?: Frame
+  frame?: Frame,
 ): Promise<SpatialValidationResult> {
   // First: verify coordinates are within viewport
   const viewport = await page.evaluate(() => ({
@@ -80,9 +82,9 @@ export async function validateSpatialCoordinate(
 
   // Resolve target element box via the frame-specific cdpSession
   try {
-    const result = await cdpSession.send('DOM.getBoxModel', {
+    const result = (await cdpSession.send('DOM.getBoxModel', {
       backendNodeId: targetBackendNodeId,
-    }) as { model: { content: number[] } };
+    })) as { model: { content: number[] } };
 
     const q = result.model.content;
     const targetRect: BoundingBox = {
@@ -119,16 +121,16 @@ export async function validateSpatialCoordinate(
       // Determine what coordinates to pass to CDP DOM.getNodeForLocation.
       // If cdpSession is a subframe-specific session (OOPIF target), we pass frame-local coordinates.
       // Otherwise, cdpSession is the main page session, so we pass global coordinates.
-      const isSubframeSession = targetFrame !== page.mainFrame() &&
-                                (cdpSession as any).target()?.type() === 'iframe';
+      const isSubframeSession =
+        targetFrame !== page.mainFrame() && (cdpSession as any).target()?.type() === 'iframe';
       const cdpX = isSubframeSession ? localX : centerX;
       const cdpY = isSubframeSession ? localY : centerY;
 
-      const nodeAtPoint = await cdpSession.send('DOM.getNodeForLocation', {
+      const nodeAtPoint = (await cdpSession.send('DOM.getNodeForLocation', {
         x: Math.round(cdpX),
         y: Math.round(cdpY),
         includeUserAgentShadowDOM: false,
-      }) as { backendNodeId: number; frameId?: string; nodeId?: number };
+      })) as { backendNodeId: number; frameId?: string; nodeId?: number };
 
       if (nodeAtPoint.backendNodeId === targetBackendNodeId) {
         return { valid: true, coordinates: { x: centerX, y: centerY }, targetRect };
@@ -136,25 +138,30 @@ export async function validateSpatialCoordinate(
 
       // Check if the node at point is a descendant of our target or vice-versa
       try {
-        const { object: targetObj } = await cdpSession.send('DOM.resolveNode', {
+        const { object: targetObj } = (await cdpSession.send('DOM.resolveNode', {
           backendNodeId: targetBackendNodeId,
-        }) as { object: { objectId?: string } };
+        })) as { object: { objectId?: string } };
 
-        const { object: hitObj } = await cdpSession.send('DOM.resolveNode', {
+        const { object: hitObj } = (await cdpSession.send('DOM.resolveNode', {
           backendNodeId: nodeAtPoint.backendNodeId,
-        }) as { object: { objectId?: string } };
+        })) as { object: { objectId?: string } };
 
         if (targetObj.objectId && hitObj.objectId) {
-          const check = await cdpSession.send('Runtime.callFunctionOn', {
-            functionDeclaration: 'function(target) { return this === target || target.contains(this); }',
+          const check = (await cdpSession.send('Runtime.callFunctionOn', {
+            functionDeclaration:
+              'function(target) { return this === target || target.contains(this); }',
             objectId: hitObj.objectId,
             arguments: [{ objectId: targetObj.objectId }],
-            returnByValue: true
-          }) as { result: { value: boolean } };
+            returnByValue: true,
+          })) as { result: { value: boolean } };
 
           // Clean up remote objects
-          await cdpSession.send('Runtime.releaseObject', { objectId: targetObj.objectId }).catch(() => {});
-          await cdpSession.send('Runtime.releaseObject', { objectId: hitObj.objectId }).catch(() => {});
+          await cdpSession
+            .send('Runtime.releaseObject', { objectId: targetObj.objectId })
+            .catch(() => {});
+          await cdpSession
+            .send('Runtime.releaseObject', { objectId: hitObj.objectId })
+            .catch(() => {});
 
           if (check.result && check.result.value === true) {
             return { valid: true, coordinates: { x: centerX, y: centerY }, targetRect };
@@ -170,13 +177,20 @@ export async function validateSpatialCoordinate(
       let occluderRect: BoundingBox | undefined = undefined;
 
       try {
-        const containsCheck = await targetFrame.evaluate((cx, cy) => {
-          const topEl = document.elementFromPoint(cx, cy);
-          if (!topEl) return null;
-          const rect = topEl.getBoundingClientRect();
-          const selector = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className && typeof topEl.className === 'string' ? '.' + topEl.className.trim().split(/\\s+/).slice(0, 2).join('.') : ''}`;
-          return { selector, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
-        }, localX, localY);
+        const containsCheck = await targetFrame.evaluate(
+          (cx, cy) => {
+            const topEl = document.elementFromPoint(cx, cy);
+            if (!topEl) return null;
+            const rect = topEl.getBoundingClientRect();
+            const selector = `${topEl.tagName.toLowerCase()}${topEl.id ? '#' + topEl.id : ''}${topEl.className && typeof topEl.className === 'string' ? '.' + topEl.className.trim().split(/\\s+/).slice(0, 2).join('.') : ''}`;
+            return {
+              selector,
+              rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            };
+          },
+          localX,
+          localY,
+        );
 
         if (containsCheck) {
           occluderName = containsCheck.selector;
@@ -194,7 +208,6 @@ export async function validateSpatialCoordinate(
         occluderRect: occluderRect || targetRect,
         targetRect,
       };
-
     } catch (err: any) {
       return {
         valid: false,
@@ -223,15 +236,15 @@ export async function resolveElementCenter(
   cdpSession: CDPSession,
   backendNodeId: number,
   timeoutMs: number = 2000,
-  frame?: Frame
+  frame?: Frame,
 ): Promise<{ x: number; y: number }> {
   const startTime = Date.now();
 
   while (true) {
     try {
-      const result = await cdpSession.send('DOM.getBoxModel', {
+      const result = (await cdpSession.send('DOM.getBoxModel', {
         backendNodeId,
-      }) as { model: { content: number[] } };
+      })) as { model: { content: number[] } };
 
       const q = result.model.content;
       const x = Math.min(q[0], q[2], q[4], q[6]);
@@ -248,9 +261,8 @@ export async function resolveElementCenter(
 
       // If cdpSession is a subframe-specific session (OOPIF target), the coordinates are subframe-local,
       // so we must add the frame's offset to make them global.
-      const isSubframeSession = frame &&
-                                frame !== page.mainFrame() &&
-                                (cdpSession as any).target()?.type() === 'iframe';
+      const isSubframeSession =
+        frame && frame !== page.mainFrame() && (cdpSession as any).target()?.type() === 'iframe';
       if (isSubframeSession) {
         const offset = await getFrameOffset(frame);
         centerX += offset.x;
@@ -270,10 +282,10 @@ export async function resolveElementCenter(
     } catch (err) {
       if (Date.now() - startTime >= timeoutMs) {
         throw new Error(
-          `Failed to resolve element center for backendNodeId ${backendNodeId}: ${err instanceof Error ? err.message : String(err)}`
+          `Failed to resolve element center for backendNodeId ${backendNodeId}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 200));
     }
   }
 }
@@ -289,7 +301,7 @@ export async function resolveAndValidateSpatialCoordinate(
   timeoutMs: number = 2000,
   frame?: Frame,
   offset?: [number, number],
-  force?: boolean
+  force?: boolean,
 ): Promise<{ valid: boolean; coordinates?: { x: number; y: number }; error?: string }> {
   const startTime = Date.now();
   let lastError = 'Unknown error';
@@ -308,7 +320,14 @@ export async function resolveAndValidateSpatialCoordinate(
       }
 
       // Check occlusion
-      const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, frame);
+      const validation = await validateSpatialCoordinate(
+        page,
+        cdpSession,
+        x,
+        y,
+        backendNodeId,
+        frame,
+      );
       if (validation.valid) {
         return { valid: true, coordinates: validation.coordinates };
       }
@@ -322,6 +341,6 @@ export async function resolveAndValidateSpatialCoordinate(
       return { valid: false, error: lastError };
     }
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
   }
 }

@@ -21,7 +21,7 @@ import { ImmutableNodeIndex } from '../core/ImmutableNodeIndex.js';
 export async function getStateDelta(
   page: Page,
   cdpSession: CDPSession,
-  nodeIndex: ImmutableNodeIndex
+  nodeIndex: ImmutableNodeIndex,
 ): Promise<{
   text: string;
 }> {
@@ -58,7 +58,13 @@ export async function getStateDelta(
     };
   }
 
-  const formatNode = (node: { role: string; name?: string; value?: string; backendNodeId?: number; properties?: {name: string, value: unknown}[] }) => {
+  const formatNode = (node: {
+    role: string;
+    name?: string;
+    value?: string;
+    backendNodeId?: number;
+    properties?: { name: string; value: unknown }[];
+  }) => {
     let s = `[${node.role}]`;
     if (node.name) s += ` "${node.name}"`;
     if (node.value !== undefined) s += ` (value: "${node.value}")`;
@@ -87,13 +93,19 @@ export async function getStateDelta(
       // Reconstruct previous node state for diff
       const current = nodeIndex.getSnapshot(mod.stableId);
       if (!current) continue;
-      
-      const prev: any = { role: current.role, name: current.name, value: current.value, backendNodeId: current.backendNodeId, properties: current.properties };
+
+      const prev: any = {
+        role: current.role,
+        name: current.name,
+        value: current.value,
+        backendNodeId: current.backendNodeId,
+        properties: current.properties,
+      };
       if (mod.changes['role']) prev.role = mod.changes['role'].previous;
       if (mod.changes['name']) prev.name = mod.changes['name'].previous;
       if (mod.changes['value']) prev.value = mod.changes['value'].previous;
       if (mod.changes['properties']) prev.properties = mod.changes['properties'].previous;
-      
+
       markdown += `- ${formatNode(prev)}\n`;
       markdown += `+ ${formatNode(current)}\n\n`;
     }

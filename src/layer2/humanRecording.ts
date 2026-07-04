@@ -110,7 +110,9 @@ export class HumanRecordingManager {
         if (pageUrl && pageUrl !== 'about:blank') {
           this.telemetry?.addNavigation(pageUrl);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     });
 
     // Auto-stop on browser close
@@ -156,7 +158,9 @@ export class HumanRecordingManager {
         for (const interaction of interactions) {
           this.telemetry.addInteraction(interaction);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     const summary = this.telemetry.getSummary();

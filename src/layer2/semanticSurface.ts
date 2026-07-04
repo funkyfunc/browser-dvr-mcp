@@ -46,7 +46,7 @@ function serializeAXTreeToMarkdown(
   nodes: AXNodeInput[],
   semanticOnly: boolean,
   targetBackendNodeId?: number,
-  renderedNodeIds?: Set<number>
+  renderedNodeIds?: Set<number>,
 ): string {
   if (!nodes || nodes.length === 0) return '*(Empty accessibility tree)*';
 
@@ -70,7 +70,7 @@ function serializeAXTreeToMarkdown(
 
   // Find roots (nodes that are not children of any other node)
   const roots: TreeNode[] = [];
-  
+
   if (targetBackendNodeId !== undefined) {
     // Target specific node
     let targetNode: TreeNode | undefined;
@@ -108,9 +108,23 @@ function serializeAXTreeToMarkdown(
       node.name?.value ||
       node.description?.value ||
       node.value?.value !== undefined ||
-      ['button', 'link', 'textbox', 'checkbox', 'heading', 'menuitem',
-       'tab', 'combobox', 'listbox', 'radio', 'switch', 'slider',
-       'progressbar', 'img', 'alert'].includes(role);
+      [
+        'button',
+        'link',
+        'textbox',
+        'checkbox',
+        'heading',
+        'menuitem',
+        'tab',
+        'combobox',
+        'listbox',
+        'radio',
+        'switch',
+        'slider',
+        'progressbar',
+        'img',
+        'alert',
+      ].includes(role);
 
     let renderThis = hasContent;
 
@@ -140,7 +154,8 @@ function serializeAXTreeToMarkdown(
           else if (prop.name === 'disabled' && prop.value.value) props.push('disabled');
           else if (prop.name === 'focused' && prop.value.value) props.push('focused');
           else if (prop.name === 'required' && prop.value.value) props.push('required');
-          else if (prop.name === 'expanded') props.push(prop.value.value ? 'expanded' : 'collapsed');
+          else if (prop.name === 'expanded')
+            props.push(prop.value.value ? 'expanded' : 'collapsed');
           else if (prop.name === 'selected' && prop.value.value) props.push('selected');
         }
       }
@@ -185,7 +200,7 @@ async function sniffPrunedInteractiveElements(
   _page: Page,
   frame: any,
   cdpSession: CDPSession,
-  renderedNodeIds: Set<number>
+  renderedNodeIds: Set<number>,
 ): Promise<PrunedElement[]> {
   const prunedElements: PrunedElement[] = [];
   try {
@@ -193,39 +208,54 @@ async function sniffPrunedInteractiveElements(
 
     // Mark candidate interactive elements in page JS context
     await frame.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll('*')).filter(el => {
+      const candidates = Array.from(document.querySelectorAll('*')).filter((el) => {
         const rect = el.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return false;
 
         const style = window.getComputedStyle(el);
         const cursor = style.cursor;
         const isInteractiveCursor = [
-          'pointer', 'grab', 'grabbing', 'move', 'col-resize', 'row-resize',
-          'nesw-resize', 'nwse-resize', 'nw-resize', 'ne-resize', 'se-resize', 'sw-resize'
+          'pointer',
+          'grab',
+          'grabbing',
+          'move',
+          'col-resize',
+          'row-resize',
+          'nesw-resize',
+          'nwse-resize',
+          'nw-resize',
+          'ne-resize',
+          'se-resize',
+          'sw-resize',
         ].includes(cursor);
 
-        const hasInlineHandler = el.hasAttribute('onclick') ||
-                                 el.hasAttribute('onmousedown') ||
-                                 el.hasAttribute('onmouseup') ||
-                                 el.hasAttribute('onpointerdown');
+        const hasInlineHandler =
+          el.hasAttribute('onclick') ||
+          el.hasAttribute('onmousedown') ||
+          el.hasAttribute('onmouseup') ||
+          el.hasAttribute('onpointerdown');
 
-        const classes = el.className && typeof el.className === 'string' ? el.className.toLowerCase() : '';
+        const classes =
+          el.className && typeof el.className === 'string' ? el.className.toLowerCase() : '';
         const id = el.id ? el.id.toLowerCase() : '';
-        const hasInteractiveName = classes.includes('btn') ||
-                                   classes.includes('button') ||
-                                   classes.includes('handle') ||
-                                   classes.includes('resize') ||
-                                   classes.includes('clickable') ||
-                                   id.includes('btn') ||
-                                   id.includes('button') ||
-                                   id.includes('handle') ||
-                                   id.includes('resize') ||
-                                   id.includes('clickable');
+        const hasInteractiveName =
+          classes.includes('btn') ||
+          classes.includes('button') ||
+          classes.includes('handle') ||
+          classes.includes('resize') ||
+          classes.includes('clickable') ||
+          id.includes('btn') ||
+          id.includes('button') ||
+          id.includes('handle') ||
+          id.includes('resize') ||
+          id.includes('clickable');
 
         const tag = el.tagName.toLowerCase();
         const isStandardSemantic = ['button', 'a', 'input', 'select', 'textarea'].includes(tag);
 
-        return isInteractiveCursor || hasInlineHandler || (hasInteractiveName && !isStandardSemantic);
+        return (
+          isInteractiveCursor || hasInlineHandler || (hasInteractiveName && !isStandardSemantic)
+        );
       });
 
       candidates.forEach((el, index) => {
@@ -241,14 +271,15 @@ async function sniffPrunedInteractiveElements(
         const { objectId } = handle.remoteObject();
         if (!objectId) continue;
 
-        const { node } = await cdpSession.send('DOM.describeNode', { objectId }) as any;
+        const { node } = (await cdpSession.send('DOM.describeNode', { objectId })) as any;
         const backendNodeId = node.backendNodeId;
 
         if (backendNodeId !== undefined && !renderedNodeIds.has(backendNodeId)) {
           const details = await handle.evaluate((el: any) => {
             const style = window.getComputedStyle(el);
             const text = el.textContent ? el.textContent.trim().substring(0, 30) : '';
-            const className = el.className && typeof el.className === 'string' ? el.className.trim() : '';
+            const className =
+              el.className && typeof el.className === 'string' ? el.className.trim() : '';
             return {
               tag: el.tagName.toLowerCase(),
               id: el.id || '',
@@ -284,7 +315,7 @@ export async function getSemanticSurface(
   page: Page,
   cdpSession: CDPSession,
   nodeIndex: ImmutableNodeIndex,
-  options: { semanticOnly?: boolean } = {}
+  options: { semanticOnly?: boolean } = {},
 ): Promise<SemanticSurfaceResult> {
   const frames = page.frames();
   let totalNodeCount = 0;
@@ -322,7 +353,12 @@ export async function getSemanticSurface(
 
       // Serialize inline, tracking rendered nodes in the set
       const renderedNodeIds = new Set<number>();
-      let markdown = serializeAXTreeToMarkdown(nodes, options.semanticOnly || false, undefined, renderedNodeIds);
+      let markdown = serializeAXTreeToMarkdown(
+        nodes,
+        options.semanticOnly || false,
+        undefined,
+        renderedNodeIds,
+      );
 
       // Sniff and append pruned non-semantic interactive controls using the frame-specific CDPSession
       const frameCdp = (frame as any).client || cdpSession;
@@ -359,7 +395,7 @@ export async function getSemanticSurface(
   // so agents can diagnose the problem instead of assuming the page is blank
   if (!combinedMarkdown.trim() && errors.length > 0) {
     return {
-      markdown: `*(Empty accessibility tree)*\n\nDiagnostics (${errors.length} frame errors):\n${errors.map(e => `• ${e}`).join('\n')}`,
+      markdown: `*(Empty accessibility tree)*\n\nDiagnostics (${errors.length} frame errors):\n${errors.map((e) => `• ${e}`).join('\n')}`,
       nodeCount: 0,
       frameCount: 0,
     };
@@ -376,7 +412,7 @@ export async function getElementTree(
   cdpSession: CDPSession,
   nodeIndex: ImmutableNodeIndex,
   backendNodeId: number,
-  options: { semanticOnly?: boolean; frameId?: string } = {}
+  options: { semanticOnly?: boolean; frameId?: string } = {},
 ): Promise<{ text: string; diagnostics?: string[] }> {
   const semanticOnly = options.semanticOnly !== false;
   const diagnostics: string[] = [];

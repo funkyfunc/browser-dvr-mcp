@@ -111,7 +111,7 @@ export class CDPConnectionManager {
 
   async navigate(
     url: string,
-    options: { waitUntil?: 'load' | 'networkidle0' | 'networkidle2' | 'domcontentloaded' } = {}
+    options: { waitUntil?: 'load' | 'networkidle0' | 'networkidle2' | 'domcontentloaded' } = {},
   ): Promise<string> {
     if (!this.page) {
       throw new Error('No active page. Launch browser first.');
@@ -154,10 +154,12 @@ export class CDPConnectionManager {
   async getFrameTree(): Promise<FrameInfo[]> {
     if (!this.cdpSession) return [];
     try {
-      const result = await this.cdpSession.send('Page.getFrameTree') as {
+      const result = (await this.cdpSession.send('Page.getFrameTree')) as {
         frameTree: {
           frame: { id: string; url: string; parentId?: string; securityOrigin: string };
-          childFrames?: { frame: { id: string; url: string; parentId?: string; securityOrigin: string } }[];
+          childFrames?: {
+            frame: { id: string; url: string; parentId?: string; securityOrigin: string };
+          }[];
         };
       };
 
@@ -210,7 +212,7 @@ export class CDPConnectionManager {
       }
     }
     throw new Error(
-      'Google Chrome or Chromium executable not found. Please install Chrome or set executablePath.'
+      'Google Chrome or Chromium executable not found. Please install Chrome or set executablePath.',
     );
   }
 

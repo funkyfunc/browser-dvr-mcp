@@ -214,9 +214,11 @@ export class SessionTelemetryManager {
    */
   attachToPage(page: Page): void {
     // Expose mutation reporting function to the browser
-    page.exposeFunction('__mcp_report_mutation', (mutation: any) => {
-      this.addMutation(mutation.type, mutation.targetId, mutation);
-    }).catch(() => {});
+    page
+      .exposeFunction('__mcp_report_mutation', (mutation: any) => {
+        this.addMutation(mutation.type, mutation.targetId, mutation);
+      })
+      .catch(() => {});
 
     // Inject mutation tracker on document load
     page.evaluateOnNewDocument(MUTATION_INJECT_SCRIPT).catch(() => {});
@@ -381,39 +383,43 @@ export class SessionTelemetryManager {
     const durationSec = (durationMs / 1000).toFixed(1);
 
     const allNetwork = this.networkBuffer.toArray();
-    const responses = allNetwork.filter(e => e.eventType === 'response');
-    const failures = allNetwork.filter(e => e.eventType === 'failed');
-    const okCount = responses.filter(e => e.status !== undefined && e.status < 400).length;
+    const responses = allNetwork.filter((e) => e.eventType === 'response');
+    const failures = allNetwork.filter((e) => e.eventType === 'failed');
+    const okCount = responses.filter((e) => e.status !== undefined && e.status < 400).length;
 
     const allConsole = this.consoleBuffer.toArray();
-    const logs = allConsole.filter(e => ['log', 'info', 'debug'].includes(e.level)).length;
-    const warnings = allConsole.filter(e => ['warning', 'warn'].includes(e.level)).length;
-    const errors = allConsole.filter(e => e.level === 'error').length;
+    const logs = allConsole.filter((e) => ['log', 'info', 'debug'].includes(e.level)).length;
+    const warnings = allConsole.filter((e) => ['warning', 'warn'].includes(e.level)).length;
+    const errors = allConsole.filter((e) => e.level === 'error').length;
 
     const allMutations = this.mutationBuffer.toArray();
-    const structural = allMutations.filter(e => e.type === 'childList').length;
-    const attribute = allMutations.filter(e => e.type === 'attributes').length;
+    const structural = allMutations.filter((e) => e.type === 'childList').length;
+    const attribute = allMutations.filter((e) => e.type === 'attributes').length;
 
-    const clicks = this.interactionLog.filter(e => e.type === 'click').length;
-    const typing = this.interactionLog.filter(e => e.type === 'type' || e.type === 'input').length;
-    const keyPresses = this.interactionLog.filter(e => e.type === 'keypress').length;
-    const scrolls = this.interactionLog.filter(e => e.type === 'scroll').length;
-    const hovers = this.interactionLog.filter(e => e.type === 'hover').length;
+    const clicks = this.interactionLog.filter((e) => e.type === 'click').length;
+    const typing = this.interactionLog.filter(
+      (e) => e.type === 'type' || e.type === 'input',
+    ).length;
+    const keyPresses = this.interactionLog.filter((e) => e.type === 'keypress').length;
+    const scrolls = this.interactionLog.filter((e) => e.type === 'scroll').length;
+    const hovers = this.interactionLog.filter((e) => e.type === 'hover').length;
 
     // JS errors
     const jsErrors = allConsole
-      .filter(e => e.level === 'error' && e.text.startsWith('Uncaught'))
-      .map(e => e.text.substring(0, 200));
+      .filter((e) => e.level === 'error' && e.text.startsWith('Uncaught'))
+      .map((e) => e.text.substring(0, 200));
 
     // Auto-generated alerts
     const alerts: string[] = [];
 
-    const serverErrors = responses.filter(e => e.status !== undefined && e.status >= 500);
+    const serverErrors = responses.filter((e) => e.status !== undefined && e.status >= 500);
     for (const err of serverErrors.slice(0, 5)) {
       alerts.push(`⚠ ${err.method} ${this.truncateUrl(err.url)} → ${err.status}`);
     }
 
-    const clientErrors = responses.filter(e => e.status !== undefined && e.status >= 400 && e.status < 500);
+    const clientErrors = responses.filter(
+      (e) => e.status !== undefined && e.status >= 400 && e.status < 500,
+    );
     for (const err of clientErrors.slice(0, 5)) {
       alerts.push(`⚠ ${err.method} ${this.truncateUrl(err.url)} → ${err.status}`);
     }
@@ -422,14 +428,16 @@ export class SessionTelemetryManager {
     }
 
     for (const f of failures.slice(0, 3)) {
-      alerts.push(`🔴 ${f.method} ${this.truncateUrl(f.url)} failed${f.errorText ? `: ${f.errorText}` : ''}`);
+      alerts.push(
+        `🔴 ${f.method} ${this.truncateUrl(f.url)} failed${f.errorText ? `: ${f.errorText}` : ''}`,
+      );
     }
 
     for (const err of jsErrors.slice(0, 3)) {
       alerts.push(`🔴 ${err}`);
     }
 
-    const slowRequests = responses.filter(e => e.duration !== undefined && e.duration > 2000);
+    const slowRequests = responses.filter((e) => e.duration !== undefined && e.duration > 2000);
     if (slowRequests.length > 0) {
       alerts.push(`🐢 ${slowRequests.length} slow request(s) over 2s`);
     }
@@ -438,7 +446,7 @@ export class SessionTelemetryManager {
       alerts.push(`📐 CLS: ${this.cumulativeLayoutShift.toFixed(3)} (threshold: 0.1)`);
     }
 
-    const pagesVisited = this.navigationHistory.map(n => {
+    const pagesVisited = this.navigationHistory.map((n) => {
       const statusStr = n.statusCode ? ` (${n.statusCode})` : '';
       return `${this.truncateUrl(n.url)}${statusStr}`;
     });
@@ -481,37 +489,46 @@ export class SessionTelemetryManager {
       case 'navigation':
         return this.navigationHistory;
       default:
-        return { error: `Unknown category '${category}'. Valid: network, console, mutations, interactions, navigation` };
+        return {
+          error: `Unknown category '${category}'. Valid: network, console, mutations, interactions, navigation`,
+        };
     }
   }
 
   // ─── Drill-Down Implementations ───────────────────────────────────────
 
   private drillDownNetwork(filter?: string): NetworkEvent[] {
-    const events = this.networkBuffer.filter(e => e.eventType === 'response' || e.eventType === 'failed');
+    const events = this.networkBuffer.filter(
+      (e) => e.eventType === 'response' || e.eventType === 'failed',
+    );
     if (!filter) return events;
 
     switch (filter) {
       case 'failed':
-        return events.filter(e => e.eventType === 'failed' || (e.status !== undefined && e.status >= 400));
+        return events.filter(
+          (e) => e.eventType === 'failed' || (e.status !== undefined && e.status >= 400),
+        );
       case 'slow':
-        return events.filter(e => e.duration !== undefined && e.duration > 2000);
+        return events.filter((e) => e.duration !== undefined && e.duration > 2000);
       case 'api':
-        return events.filter(e => {
+        return events.filter((e) => {
           const url = e.url.toLowerCase();
-          return url.includes('/api/') || url.includes('/graphql') ||
-            (e.resourceType && ['xhr', 'fetch'].includes(e.resourceType));
+          return (
+            url.includes('/api/') ||
+            url.includes('/graphql') ||
+            (e.resourceType && ['xhr', 'fetch'].includes(e.resourceType))
+          );
         });
       default:
         if (filter.startsWith('status:')) {
           const code = parseInt(filter.split(':')[1], 10);
-          return events.filter(e => e.status === code);
+          return events.filter((e) => e.status === code);
         }
         if (filter.startsWith('id:')) {
           const id = filter.slice(3);
-          return this.networkBuffer.filter(e => e.id === id);
+          return this.networkBuffer.filter((e) => e.id === id);
         }
-        return events.filter(e => e.url.includes(filter));
+        return events.filter((e) => e.url.includes(filter));
     }
   }
 
@@ -521,11 +538,11 @@ export class SessionTelemetryManager {
 
     switch (filter) {
       case 'errors':
-        return events.filter(e => e.level === 'error');
+        return events.filter((e) => e.level === 'error');
       case 'warnings':
-        return events.filter(e => ['warning', 'warn'].includes(e.level));
+        return events.filter((e) => ['warning', 'warn'].includes(e.level));
       default:
-        return events.filter(e => e.text.toLowerCase().includes(filter.toLowerCase()));
+        return events.filter((e) => e.text.toLowerCase().includes(filter.toLowerCase()));
     }
   }
 
@@ -535,11 +552,11 @@ export class SessionTelemetryManager {
 
     switch (filter) {
       case 'structural':
-        return events.filter(e => e.type === 'childList');
+        return events.filter((e) => e.type === 'childList');
       case 'attributes':
-        return events.filter(e => e.type === 'attributes');
+        return events.filter((e) => e.type === 'attributes');
       default:
-        return events.filter(e => e.targetId === filter);
+        return events.filter((e) => e.targetId === filter);
     }
   }
 
@@ -548,11 +565,11 @@ export class SessionTelemetryManager {
 
     switch (filter) {
       case 'clicks':
-        return this.interactionLog.filter(e => e.type === 'click');
+        return this.interactionLog.filter((e) => e.type === 'click');
       case 'typing':
-        return this.interactionLog.filter(e => e.type === 'type' || e.type === 'input');
+        return this.interactionLog.filter((e) => e.type === 'type' || e.type === 'input');
       case 'keys':
-        return this.interactionLog.filter(e => e.type === 'keypress');
+        return this.interactionLog.filter((e) => e.type === 'keypress');
       default:
         return this.interactionLog;
     }
@@ -571,10 +588,12 @@ export class SessionTelemetryManager {
       if (e.timestamp >= cutoff) events.push({ type: 'console', timestamp: e.timestamp, data: e });
     }
     for (const e of this.interactionLog) {
-      if (e.timestamp >= cutoff) events.push({ type: 'interaction', timestamp: e.timestamp, data: e });
+      if (e.timestamp >= cutoff)
+        events.push({ type: 'interaction', timestamp: e.timestamp, data: e });
     }
     for (const e of this.navigationHistory) {
-      if (e.timestamp >= cutoff) events.push({ type: 'navigation', timestamp: e.timestamp, data: e });
+      if (e.timestamp >= cutoff)
+        events.push({ type: 'navigation', timestamp: e.timestamp, data: e });
     }
 
     return events.sort((a, b) => a.timestamp - b.timestamp);
@@ -583,18 +602,22 @@ export class SessionTelemetryManager {
   // ─── Serialization ────────────────────────────────────────────────────
 
   serialize(): string {
-    return JSON.stringify({
-      id: this.id,
-      startedAt: this.startedAt,
-      endedAt: Date.now(),
-      mode: this.mode,
-      currentUrl: this.currentUrl,
-      navigations: this.navigationHistory,
-      networkEvents: this.networkBuffer.toArray(),
-      consoleEvents: this.consoleBuffer.toArray(),
-      mutationEvents: this.mutationBuffer.toArray(),
-      interactionEvents: this.interactionLog,
-    }, null, 2);
+    return JSON.stringify(
+      {
+        id: this.id,
+        startedAt: this.startedAt,
+        endedAt: Date.now(),
+        mode: this.mode,
+        currentUrl: this.currentUrl,
+        navigations: this.navigationHistory,
+        networkEvents: this.networkBuffer.toArray(),
+        consoleEvents: this.consoleBuffer.toArray(),
+        mutationEvents: this.mutationBuffer.toArray(),
+        interactionEvents: this.interactionLog,
+      },
+      null,
+      2,
+    );
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────

@@ -12,8 +12,17 @@ import { join } from 'path';
 import { CDPConnectionManager } from '../src/core/CDPConnectionManager.js';
 import { ImmutableNodeIndex } from '../src/core/ImmutableNodeIndex.js';
 import { SessionTelemetryManager } from '../src/telemetry/SessionTelemetryManager.js';
-import { atomicClick, atomicType, atomicKeyPress, atomicScroll, coordinateClick } from '../src/layer1/atomicInteract.js';
-import { validateSpatialCoordinate, resolveElementCenter } from '../src/layer1/spatialValidation.js';
+import {
+  atomicClick,
+  atomicType,
+  atomicKeyPress,
+  atomicScroll,
+  coordinateClick,
+} from '../src/layer1/atomicInteract.js';
+import {
+  validateSpatialCoordinate,
+  resolveElementCenter,
+} from '../src/layer1/spatialValidation.js';
 import { evaluateInContext } from '../src/layer1/evaluateInContext.js';
 import { getSemanticSurface } from '../src/layer2/semanticSurface.js';
 import { getStateDelta } from '../src/layer2/stateDelta.js';
@@ -48,14 +57,16 @@ async function waitForFlag(flagId: string, timeoutMs = 10000): Promise<boolean> 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (await hasSuccessFlag(flagId)) return true;
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 300));
   }
   return false;
 }
 
 async function scrollToSection(sectionId: string): Promise<void> {
-  await evaluate(`document.getElementById('${sectionId}')?.scrollIntoView({ block: 'start', behavior: 'instant' })`);
-  await new Promise(r => setTimeout(r, 200));
+  await evaluate(
+    `document.getElementById('${sectionId}')?.scrollIntoView({ block: 'start', behavior: 'instant' })`,
+  );
+  await new Promise((r) => setTimeout(r, 200));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,12 +159,22 @@ describe('Core Architecture', () => {
 
   describe('Spatial Validation', () => {
     it('should validate coordinates within viewport bounds', async () => {
-      const result = await validateSpatialCoordinate(conn.getPage()!, conn.getCDPSession()!, 100, 100);
+      const result = await validateSpatialCoordinate(
+        conn.getPage()!,
+        conn.getCDPSession()!,
+        100,
+        100,
+      );
       expect(result.valid).toBe(true);
     });
 
     it('should reject coordinates outside viewport bounds', async () => {
-      const result = await validateSpatialCoordinate(conn.getPage()!, conn.getCDPSession()!, -100, -100);
+      const result = await validateSpatialCoordinate(
+        conn.getPage()!,
+        conn.getCDPSession()!,
+        -100,
+        -100,
+      );
       expect(result.valid).toBe(false);
     });
 
@@ -201,7 +222,7 @@ describe('Core Architecture', () => {
       `);
 
       // Small delay for DOM mutation to propagate
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 200));
 
       const result = await getStateDelta(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
       expect(result.text).toBeTruthy();

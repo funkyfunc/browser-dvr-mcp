@@ -22,7 +22,7 @@ export async function evaluateInContext(
   _cdpSession: CDPSession,
   expression: string,
   frameIndex?: number,
-  timeoutMs: number = 5000
+  timeoutMs: number = 5000,
 ): Promise<EvaluateResult> {
   try {
     const frames = page.frames();
@@ -39,7 +39,7 @@ export async function evaluateInContext(
     const result = await Promise.race([
       targetFrame.evaluate(expression),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Evaluation timed out after ${timeoutMs}ms`)), timeoutMs)
+        setTimeout(() => reject(new Error(`Evaluation timed out after ${timeoutMs}ms`)), timeoutMs),
       ),
     ]);
 

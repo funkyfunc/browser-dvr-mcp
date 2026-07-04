@@ -53,14 +53,16 @@ async function waitForFlag(flagId: string, timeoutMs = 10000): Promise<boolean> 
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (await hasSuccessFlag(flagId)) return true;
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 300));
   }
   return false;
 }
 
 async function scrollToSection(sectionId: string): Promise<void> {
-  await evaluate(`document.getElementById('${sectionId}')?.scrollIntoView({ block: 'start', behavior: 'instant' })`);
-  await new Promise(r => setTimeout(r, 200));
+  await evaluate(
+    `document.getElementById('${sectionId}')?.scrollIntoView({ block: 'start', behavior: 'instant' })`,
+  );
+  await new Promise((r) => setTimeout(r, 200));
 }
 
 async function dismissModalIfPresent(): Promise<void> {
@@ -68,7 +70,7 @@ async function dismissModalIfPresent(): Promise<void> {
     document.getElementById('interruption-modal')?.style?.display === 'flex' &&
     document.getElementById('accept-modal-btn')?.click()
   `);
-  await new Promise(r => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 300));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -95,7 +97,6 @@ describe('Adversarial Testbed', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('Category 1: Structural & Encapsulation', () => {
-
     // ── Hurdle 1.1: Closed Shadow DOM ────────────────────────────────────────
 
     describe('Hurdle 1.1 — Closed Shadow DOM', () => {
@@ -176,13 +177,18 @@ describe('Adversarial Testbed', () => {
           })()
         `);
         expect(iframeResult.success).toBe(true);
-        const iframeBox = iframeResult.result as { x: number; y: number; width: number; height: number };
+        const iframeBox = iframeResult.result as {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        };
 
         // Try the frame API first
         const page = conn.getPage()!;
         const cdp = conn.getCDPSession()!;
         const frames = page.frames();
-        const dataFrame = frames.find(f => f.url().startsWith('data:'));
+        const dataFrame = frames.find((f) => f.url().startsWith('data:'));
 
         if (dataFrame) {
           const btn = await dataFrame.$('#isolated-btn');
@@ -268,7 +274,12 @@ describe('Adversarial Testbed', () => {
           })()
         `);
         expect(canvasInfo.success).toBe(true);
-        const info = canvasInfo.result as { canvasX: number; canvasY: number; targetX: number; targetY: number };
+        const info = canvasInfo.result as {
+          canvasX: number;
+          canvasY: number;
+          targetX: number;
+          targetY: number;
+        };
 
         const page = conn.getPage()!;
         const cdp = conn.getCDPSession()!;
@@ -287,7 +298,6 @@ describe('Adversarial Testbed', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('Category 2: State, Timing & Framework', () => {
-
     // ── Hurdle 2.1: Delayed Hydration ────────────────────────────────────────
 
     describe('Hurdle 2.1 — Delayed Hydration', () => {
@@ -306,7 +316,7 @@ describe('Adversarial Testbed', () => {
         await scrollToSection('hurdle-2-1');
 
         // Wait for hydration (2000ms delay in testbed)
-        await new Promise(r => setTimeout(r, 2500));
+        await new Promise((r) => setTimeout(r, 2500));
 
         // Dismiss modal if it appeared
         await dismissModalIfPresent();
@@ -331,7 +341,7 @@ describe('Adversarial Testbed', () => {
     describe('Hurdle 2.2 — Stale DOM References', () => {
       it('evaluate_in_context with atomic locate-and-click beats stale DOM', async () => {
         await conn.navigate(TESTBED_URL);
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 500));
 
         // Atomic locate + click in a single JS execution context.
         // This prevents the 800ms re-render from invalidating the reference.
@@ -353,7 +363,7 @@ describe('Adversarial Testbed', () => {
       it('the ephemeral button is actually re-rendering', async () => {
         await conn.navigate(TESTBED_URL);
         const count1 = await evaluate(`document.getElementById('ephemeral-btn')?.textContent`);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 2000));
         const count2 = await evaluate(`document.getElementById('ephemeral-btn')?.textContent`);
 
         // Both should exist (re-render recreates, not destroys)
@@ -367,7 +377,7 @@ describe('Adversarial Testbed', () => {
     describe('Hurdle 2.3 — SPA Client-Side Routing', () => {
       it('clicking SPA link triggers client-side navigation', async () => {
         await conn.navigate(TESTBED_URL);
-        await new Promise(r => setTimeout(r, 1800));
+        await new Promise((r) => setTimeout(r, 1800));
         await dismissModalIfPresent();
         await scrollToSection('hurdle-2-3');
 
@@ -382,7 +392,7 @@ describe('Adversarial Testbed', () => {
         expect(clickResult.success).toBe(true);
         expect(clickResult.result).toBe('dispatched');
 
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 300));
         const loadingState = await evaluate(`
           document.getElementById('router-outlet')?.textContent?.trim()
         `);
@@ -429,7 +439,7 @@ describe('Adversarial Testbed', () => {
         `);
         expect(scrollResult.result).toBe('scrolled');
 
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 500));
 
         const itemResult = await evaluate(`!!document.querySelector('[data-id="45"]')`);
         expect(itemResult.result).toBe(true);
@@ -463,14 +473,13 @@ describe('Adversarial Testbed', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('Category 3: Interruption & Overlays', () => {
-
     // ── Hurdle 3.1: Modal Overlay ────────────────────────────────────────────
 
     describe('Hurdle 3.1 — Modal Overlay', () => {
       it('modal appears after delay and blocks the primary objective', async () => {
         await conn.navigate(TESTBED_URL);
         await scrollToSection('hurdle-3-1');
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 2000));
 
         const modalVisible = await evaluate(`
           document.getElementById('interruption-modal').style.display
@@ -481,7 +490,7 @@ describe('Adversarial Testbed', () => {
       it('dismiss modal → click primary objective succeeds', async () => {
         // Dismiss the modal
         await evaluate(`document.getElementById('accept-modal-btn')?.click()`);
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 300));
 
         const modalHidden = await evaluate(`
           document.getElementById('interruption-modal').style.display
@@ -502,7 +511,7 @@ describe('Adversarial Testbed', () => {
     describe('Hurdle 3.2 — Honeypot Form', () => {
       beforeAll(async () => {
         await conn.navigate(TESTBED_URL);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 2000));
         await dismissModalIfPresent();
         await scrollToSection('hurdle-3-2');
       });
@@ -531,10 +540,10 @@ describe('Adversarial Testbed', () => {
         // At least one indicator should reveal it as hidden
         expect(
           honeypotInfo.opacity === '0' ||
-          honeypotInfo.width === 0 ||
-          honeypotInfo.height === 0 ||
-          honeypotInfo.pointerEvents === 'none' ||
-          parseInt(honeypotInfo.left as string) < -1000
+            honeypotInfo.width === 0 ||
+            honeypotInfo.height === 0 ||
+            honeypotInfo.pointerEvents === 'none' ||
+            parseInt(honeypotInfo.left as string) < -1000,
         ).toBe(true);
       });
 
@@ -551,7 +560,7 @@ describe('Adversarial Testbed', () => {
 
       it('form submission WITH honeypot data triggers bot detection', async () => {
         await conn.navigate(TESTBED_URL);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 2000));
         await dismissModalIfPresent();
         await scrollToSection('hurdle-3-2');
 
@@ -562,7 +571,7 @@ describe('Adversarial Testbed', () => {
         `);
 
         await evaluate(`document.getElementById('submit-registration')?.click()`);
-        await new Promise(r => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 300));
 
         const trapFired = await waitForFlag('honeypot-trap-flag', 3000);
         expect(trapFired).toBe(true);
@@ -577,10 +586,10 @@ describe('Adversarial Testbed', () => {
     describe('Category 4: Complex Layout & Nested Frames', () => {
       beforeAll(async () => {
         await conn.navigate(TESTBED_URL);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 2000));
         await dismissModalIfPresent();
         await scrollToSection('hurdle-4-1');
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 1000));
       });
 
       it('should pierce nested scaled frames and click the button', async () => {
@@ -588,10 +597,14 @@ describe('Adversarial Testbed', () => {
         const cdp = conn.getCDPSession()!;
 
         // Find backendNodeId of the button inside the child frame
-        const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
+        const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
         let btnBackendNodeId: number | null = null;
         const findTarget = (node: any) => {
-          if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('nested-btn')) {
+          if (
+            node.nodeName === 'BUTTON' &&
+            node.attributes &&
+            node.attributes.includes('nested-btn')
+          ) {
             btnBackendNodeId = node.backendNodeId;
             return;
           }
@@ -606,25 +619,42 @@ describe('Adversarial Testbed', () => {
         // Resolve target frame context
         const { findFrameForBackendNodeId } = await import('../src/layer1/atomicInteract.js');
         const frame = await findFrameForBackendNodeId(page, btnBackendNodeId!);
-        
+
         const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
         const { getElementTree } = await import('../src/layer2/semanticSurface.js');
-        const result = await getElementTree(cdp, nodeIndex, btnBackendNodeId!, { semanticOnly: true, frameId });
+        const result = await getElementTree(cdp, nodeIndex, btnBackendNodeId!, {
+          semanticOnly: true,
+          frameId,
+        });
         expect(result.text).toContain('Verify Nested');
 
         // Let's click it!
         const targetCdp = (frame as any).client || cdp;
-        const { resolveAndValidateSpatialCoordinate } = await import('../src/layer1/spatialValidation.js');
-        const validation = await resolveAndValidateSpatialCoordinate(page, targetCdp, btnBackendNodeId!, 3000, frame, undefined, true);
+        const { resolveAndValidateSpatialCoordinate } =
+          await import('../src/layer1/spatialValidation.js');
+        const validation = await resolveAndValidateSpatialCoordinate(
+          page,
+          targetCdp,
+          btnBackendNodeId!,
+          3000,
+          frame,
+          undefined,
+          true,
+        );
         expect(validation.valid).toBe(true);
         expect(validation.coordinates).toBeDefined();
 
-        await coordinateClick(page, cdp, validation.coordinates!.x, validation.coordinates!.y, telemetry);
+        await coordinateClick(
+          page,
+          cdp,
+          validation.coordinates!.x,
+          validation.coordinates!.y,
+          telemetry,
+        );
 
         const successFlag = await waitForFlag('nested-iframe-success-flag', 3000);
         expect(successFlag).toBe(true);
       });
     });
-
   });
 });

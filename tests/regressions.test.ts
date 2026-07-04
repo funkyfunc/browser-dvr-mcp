@@ -20,7 +20,6 @@ function findChrome() {
 }
 
 describe('Regressions & New Features Tests', () => {
-
   it('should calculate correct offsets for deeply nested iframes', async () => {
     const browser = await puppeteer.launch({
       executablePath: findChrome(),
@@ -46,12 +45,12 @@ describe('Regressions & New Features Tests', () => {
     `);
 
     // Wait for frames to load
-    await new Promise(r => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 1200));
 
     const cdp = await page.createCDPSession();
     await cdp.send('DOM.enable');
 
-    const doc = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }) as any;
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
 
     let btnBackendNodeId: number | null = null;
     const findTarget = (node: any) => {
@@ -75,7 +74,13 @@ describe('Regressions & New Features Tests', () => {
 
     // Resolve element center for Deep Button
     // Expected center: x = 50, y = 100 (Spacer Main) + 50 (Spacer A) + 25 (Button half-height) = 175
-    const center = await resolveAndValidateSpatialCoordinate(page, targetCdp, btnBackendNodeId!, 2000, frameB);
+    const center = await resolveAndValidateSpatialCoordinate(
+      page,
+      targetCdp,
+      btnBackendNodeId!,
+      2000,
+      frameB,
+    );
     expect(center.valid).toBe(true);
     expect(center.coordinates).toBeDefined();
     expect(center.coordinates!.y).toBeCloseTo(175, 1);
@@ -99,7 +104,7 @@ describe('Regressions & New Features Tests', () => {
       </body>
     `);
 
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 500));
 
     // Modify DOM
     await page.evaluate(() => {
@@ -110,7 +115,7 @@ describe('Regressions & New Features Tests', () => {
     });
 
     // Wait a little for MutationObserver
-    await new Promise(r => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 1200));
 
     const summary = tel.getSummary();
     expect(summary.mutations.total).toBeGreaterThan(0);
@@ -140,7 +145,7 @@ describe('Regressions & New Features Tests', () => {
       await page.evaluate((val) => {
         document.body.style.backgroundColor = val % 2 === 0 ? 'red' : 'blue';
       }, i);
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     const stopResult = await screencast.stopRecording();

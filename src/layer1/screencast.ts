@@ -24,7 +24,7 @@ export class ScreencastManager {
 
   constructor(
     private cdpSession: CDPSession,
-    private workerBridge?: WorkerBridge | null
+    private workerBridge?: WorkerBridge | null,
   ) {}
 
   /**
@@ -36,10 +36,10 @@ export class ScreencastManager {
 
     await this.cdpSession.send('Page.startScreencast', {
       format: 'jpeg',
-      quality: 60,       // Compressed for token efficiency
+      quality: 60, // Compressed for token efficiency
       maxWidth: 1024,
       maxHeight: 576,
-      everyNthFrame: 2,  // Every other frame to reduce load
+      everyNthFrame: 2, // Every other frame to reduce load
     });
 
     this.active = true;
@@ -58,7 +58,9 @@ export class ScreencastManager {
       }
 
       // Ack the frame to keep the stream flowing
-      this.cdpSession.send('Page.screencastFrameAck', { sessionId: event.sessionId }).catch(() => {});
+      this.cdpSession
+        .send('Page.screencastFrameAck', { sessionId: event.sessionId })
+        .catch(() => {});
     });
   }
 
@@ -108,7 +110,9 @@ export class ScreencastManager {
       baseDir = join(os.tmpdir(), 'best-browser-mcp');
     }
     this.recordingOutputDir = outputDir
-      ? (isAbsolute(outputDir) ? outputDir : resolve(baseDir, outputDir))
+      ? isAbsolute(outputDir)
+        ? outputDir
+        : resolve(baseDir, outputDir)
       : join(baseDir, 'recordings', `rec_${Date.now()}`);
     mkdirSync(this.recordingOutputDir, { recursive: true });
 
@@ -167,21 +171,31 @@ export class ScreencastManager {
       writeFileSync(join(outputDir, filename), Buffer.from(frames[i].data, 'base64'));
     }
 
-    const fps = frames.length > 0 ? Math.max(1, Math.round(frames.length / Math.max(durationSeconds, 1))) : 1;
+    const fps =
+      frames.length > 0 ? Math.max(1, Math.round(frames.length / Math.max(durationSeconds, 1))) : 1;
     const videoOutputPath = join(outputDir, 'recording.mp4');
 
     let videoPath: string | null = null;
     if (ffmpegPath && frames.length > 0) {
       try {
-        execFileSync(ffmpegPath as any, [
-          '-y',
-          '-framerate', String(fps),
-          '-i', join(outputDir, 'frame_%05d.jpg'),
-          '-c:v', 'libx264',
-          '-pix_fmt', 'yuv420p',
-          '-movflags', '+faststart',
-          videoOutputPath,
-        ], { timeout: 30_000 });
+        execFileSync(
+          ffmpegPath as any,
+          [
+            '-y',
+            '-framerate',
+            String(fps),
+            '-i',
+            join(outputDir, 'frame_%05d.jpg'),
+            '-c:v',
+            'libx264',
+            '-pix_fmt',
+            'yuv420p',
+            '-movflags',
+            '+faststart',
+            videoOutputPath,
+          ],
+          { timeout: 30_000 },
+        );
         videoPath = videoOutputPath;
       } catch (err) {
         console.error('ffmpeg assembly failed:', err);
