@@ -17,7 +17,7 @@ export function resolveSafePath(userPath: string): string {
   }
   let baseDir = process.cwd();
   if (baseDir === '/' || baseDir === '\\') {
-    baseDir = path.join(os.homedir(), '.best-browser-mcp');
+    baseDir = path.join(os.tmpdir(), 'best-browser-mcp');
   }
   return path.resolve(baseDir, userPath);
 }

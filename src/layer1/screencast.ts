@@ -105,7 +105,7 @@ export class ScreencastManager {
 
     let baseDir = process.cwd();
     if (baseDir === '/' || baseDir === '\\') {
-      baseDir = join(os.homedir(), '.best-browser-mcp');
+      baseDir = join(os.tmpdir(), 'best-browser-mcp');
     }
     this.recordingOutputDir = outputDir
       ? (isAbsolute(outputDir) ? outputDir : resolve(baseDir, outputDir))
