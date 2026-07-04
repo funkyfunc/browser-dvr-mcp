@@ -76,6 +76,8 @@ export class ImmutableNodeIndex {
         backendNodeId: backendId,
         role: node.role?.value || 'generic',
         name: node.name?.value || '',
+        value: typeof node.value?.value === 'string' ? node.value.value : undefined,
+        properties: node.properties ? node.properties.map(p => ({ name: p.name, value: p.value.value })) : undefined,
         childIds: childStableIds,
       });
     }
@@ -137,6 +139,12 @@ export class ImmutableNodeIndex {
       }
       if (previous.name !== current.name) {
         changes['name'] = { previous: previous.name, current: current.name };
+      }
+      if (previous.value !== current.value) {
+        changes['value'] = { previous: previous.value, current: current.value };
+      }
+      if (JSON.stringify(previous.properties) !== JSON.stringify(current.properties)) {
+        changes['properties'] = { previous: previous.properties, current: current.properties };
       }
       if (JSON.stringify(previous.childIds) !== JSON.stringify(current.childIds)) {
         changes['children'] = { previous: previous.childIds, current: current.childIds };

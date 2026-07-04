@@ -140,6 +140,60 @@ export async function coordinateClick(
 }
 
 /**
+ * Atomic double click: click element center twice.
+ */
+export async function atomicDoubleClick(
+  page: Page,
+  cdpSession: CDPSession,
+  backendNodeId: number,
+  telemetry: SessionTelemetryManager,
+  options: { timeoutMs?: number } = {}
+): Promise<AtomicInteractResult> {
+  const { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+
+  if (x < 0 || y < 0) {
+    return {
+      success: false,
+      action: 'dblclick',
+      coordinates: { x, y },
+      feedback: `Coordinates (${x}, ${y}) out of viewport bounds.`,
+    };
+  }
+
+  // First click
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1,
+  });
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1,
+  });
+
+  // Second click
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 2,
+  });
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 2,
+  });
+
+  await new Promise(r => setTimeout(r, 150));
+
+  telemetry.addInteraction({
+    type: 'click', // track as click
+    timestamp: Date.now(),
+    x, y,
+    target: `backendNodeId:${backendNodeId}`,
+  });
+
+  return {
+    success: true,
+    action: 'dblclick',
+    coordinates: { x, y },
+    feedback: `Double-clicked element (id: ${backendNodeId}).`,
+  };
+}
+
+/**
  * Atomic type: click to focus → type text using CDP key events.
  */
 export async function atomicType(
@@ -164,17 +218,12 @@ export async function atomicType(
     button: 'left', clickCount: 1,
   });
 
-  // Optional: select all and delete to clear field first
+  // Optional: select all text, then delete to clear field first
   if (options.clearFirst !== false) {
     await cdpSession.send('Input.dispatchKeyEvent', {
-      type: 'keyDown', key: 'a',
-      modifiers: process.platform === 'darwin' ? 4 : 2, // Meta on Mac, Ctrl otherwise
+      type: 'keyDown', commands: ['selectAll'],
     });
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a' });
-    await cdpSession.send('Input.dispatchKeyEvent', {
-      type: 'keyDown', key: 'Backspace',
-    });
-    await cdpSession.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace' });
+    // We don't need backspace, insertText below will overwrite the selection.
   }
 
   // Type each character using insertText for proper IME handling
@@ -195,6 +244,54 @@ export async function atomicType(
     action: 'type',
     coordinates: { x, y },
     feedback: `Typed "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}" into element (id: ${backendNodeId}).`,
+  };
+}
+
+/**
+ * Atomic clear: focus an element and clear its value using a triple click.
+ */
+export async function atomicClear(
+  page: Page,
+  cdpSession: CDPSession,
+  backendNodeId: number,
+  telemetry: SessionTelemetryManager,
+  options: { timeoutMs?: number } = {}
+): Promise<AtomicInteractResult> {
+  const { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
+
+  // Focus first
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: Math.round(x), y: Math.round(y),
+    button: 'left', clickCount: 1,
+  });
+  await cdpSession.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: Math.round(x), y: Math.round(y),
+    button: 'left', clickCount: 1,
+  });
+
+  // Select all and clear
+  await cdpSession.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', commands: ['selectAll'],
+  });
+  await cdpSession.send('Input.insertText', { text: '' });
+
+  await new Promise(r => setTimeout(r, 150));
+
+  telemetry.addInteraction({
+    type: 'type', // Tracked as a type operation for simplicity
+    timestamp: Date.now(),
+    x, y,
+    text: '',
+    target: `backendNodeId:${backendNodeId}`,
+  });
+
+  return {
+    success: true,
+    action: 'clear',
+    coordinates: { x, y },
+    feedback: `Cleared text in element (id: ${backendNodeId}).`,
   };
 }
 

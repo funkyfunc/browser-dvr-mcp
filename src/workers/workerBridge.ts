@@ -23,6 +23,12 @@ export class WorkerBridge {
       workerPath = join(__dirname, 'serializationWorker.ts');
     }
 
+    // Fail fast if neither file exists (happens in esbuild --bundle builds
+    // where the worker is inlined into the main bundle)
+    if (!existsSync(workerPath)) {
+      throw new Error(`Serialization worker not found at ${workerPath}. DVR frame buffering unavailable.`);
+    }
+
     this.worker = new Worker(workerPath, {
       execArgv: workerPath.endsWith('.ts') ? ['--import', 'tsx'] : [],
     });

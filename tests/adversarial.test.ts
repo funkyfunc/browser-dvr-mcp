@@ -22,7 +22,6 @@ import { join } from 'path';
 import { CDPConnectionManager } from '../src/core/CDPConnectionManager.js';
 import { ImmutableNodeIndex } from '../src/core/ImmutableNodeIndex.js';
 import { SessionTelemetryManager } from '../src/telemetry/SessionTelemetryManager.js';
-import { WorkerBridge } from '../src/workers/workerBridge.js';
 import { coordinateClick, atomicType } from '../src/layer1/atomicInteract.js';
 import { evaluateInContext } from '../src/layer1/evaluateInContext.js';
 import { getSemanticSurface } from '../src/layer2/semanticSurface.js';
@@ -36,7 +35,6 @@ const TESTBED_URL = `file://${join(process.cwd(), 'tests', 'fixtures', 'adversar
 let conn: CDPConnectionManager;
 let nodeIndex: ImmutableNodeIndex;
 let telemetry: SessionTelemetryManager;
-let workerBridge: WorkerBridge;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
@@ -81,7 +79,6 @@ describe('Adversarial Testbed', () => {
   beforeAll(async () => {
     conn = new CDPConnectionManager();
     nodeIndex = new ImmutableNodeIndex();
-    workerBridge = new WorkerBridge();
     telemetry = new SessionTelemetryManager('agent');
 
     const { page, cdpSession } = await conn.launch({ headless: true });
@@ -91,7 +88,6 @@ describe('Adversarial Testbed', () => {
 
   afterAll(async () => {
     await conn.close();
-    await workerBridge.terminate();
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -108,7 +104,7 @@ describe('Adversarial Testbed', () => {
       });
 
       it('AX tree includes shadow DOM content (native CDP pierces closed shadows)', async () => {
-        const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, workerBridge, nodeIndex);
+        const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
         // CDP's Accessibility.getFullAXTree natively pierces closed shadow roots.
         // We should see the button text in the semantic surface.
         expect(result.markdown).toContain('Acknowledge Secure Directive');
@@ -251,7 +247,7 @@ describe('Adversarial Testbed', () => {
       });
 
       it('AX tree reports canvas as a single opaque element', async () => {
-        const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, workerBridge, nodeIndex);
+        const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
         expect(result.markdown).toContain('canvas');
       });
 

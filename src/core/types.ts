@@ -31,6 +31,8 @@ export interface NodeSnapshot {
   backendNodeId: number;
   role: string;
   name: string;
+  value?: string;
+  properties?: { name: string; value: unknown }[];
   boundingBox?: BoundingBox;
   childIds: number[];
 }

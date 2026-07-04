@@ -58,16 +58,7 @@ export class CDPConnectionManager {
     this.cdpSession = await this.page.createCDPSession();
 
     // Enable core CDP domains
-    await this.cdpSession.send('Accessibility.enable');
-    await this.cdpSession.send('DOM.enable');
-    await this.cdpSession.send('Performance.enable');
-
-    // Auto-attach to all targets (OOPIFs, service workers, etc.)
-    await this.cdpSession.send('Target.setAutoAttach', {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true,
-    });
+    await this.enableCDPDomains();
 
     const message = `Browser launched (headless: ${headless}).`;
     return { cdpSession: this.cdpSession, page: this.page, message };
@@ -97,15 +88,7 @@ export class CDPConnectionManager {
     this.page = pages[0] || (await this.browser.newPage());
     this.cdpSession = await this.page.createCDPSession();
 
-    await this.cdpSession.send('Accessibility.enable');
-    await this.cdpSession.send('DOM.enable');
-    await this.cdpSession.send('Performance.enable');
-
-    await this.cdpSession.send('Target.setAutoAttach', {
-      autoAttach: true,
-      waitForDebuggerOnStart: false,
-      flatten: true,
-    });
+    await this.enableCDPDomains();
 
     return {
       cdpSession: this.cdpSession,
@@ -126,12 +109,22 @@ export class CDPConnectionManager {
     return 'No active browser session.';
   }
 
-  async navigate(url: string): Promise<string> {
+  async navigate(
+    url: string,
+    options: { waitUntil?: 'load' | 'networkidle0' | 'networkidle2' | 'domcontentloaded' } = {}
+  ): Promise<string> {
     if (!this.page) {
       throw new Error('No active page. Launch browser first.');
     }
-    await this.page.goto(url, { waitUntil: 'load' });
-    return `Navigated to ${url}`;
+    const waitUntil = options.waitUntil || 'load';
+    await this.page.goto(url, { waitUntil, timeout: 30000 });
+
+    // Re-enable CDP domains — cross-origin navigations can invalidate them.
+    // This is critical: without this, Accessibility.getFullAXTree and
+    // DOM.describeNode return empty results after cross-origin navigations.
+    await this.enableCDPDomains();
+
+    return `Navigated to ${url} (waitUntil: ${waitUntil})`;
   }
 
   // ─── Accessors ──────────────────────────────────────────────────────────
@@ -190,6 +183,25 @@ export class CDPConnectionManager {
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────
+
+  /**
+   * Enable all core CDP domains required for perception and interaction.
+   * Must be called after launch AND after every cross-origin navigation,
+   * because cross-origin navigations can invalidate domain enablement.
+   */
+  private async enableCDPDomains(): Promise<void> {
+    if (!this.cdpSession) return;
+    await this.cdpSession.send('Accessibility.enable');
+    await this.cdpSession.send('DOM.enable');
+    await this.cdpSession.send('Performance.enable');
+
+    // Auto-attach to all targets (OOPIFs, service workers, etc.)
+    await this.cdpSession.send('Target.setAutoAttach', {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
+  }
 
   private findChromeExecutable(): string {
     for (const path of CHROME_PATHS) {

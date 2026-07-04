@@ -12,7 +12,6 @@ import { join } from 'path';
 import { CDPConnectionManager } from '../src/core/CDPConnectionManager.js';
 import { ImmutableNodeIndex } from '../src/core/ImmutableNodeIndex.js';
 import { SessionTelemetryManager } from '../src/telemetry/SessionTelemetryManager.js';
-import { WorkerBridge } from '../src/workers/workerBridge.js';
 import { atomicClick, atomicType, atomicKeyPress, atomicScroll, coordinateClick } from '../src/layer1/atomicInteract.js';
 import { validateSpatialCoordinate, resolveElementCenter } from '../src/layer1/spatialValidation.js';
 import { evaluateInContext } from '../src/layer1/evaluateInContext.js';
@@ -28,7 +27,6 @@ const TEST_PAGE_URL = `file://${join(process.cwd(), 'tests', 'fixtures', 'advers
 let conn: CDPConnectionManager;
 let nodeIndex: ImmutableNodeIndex;
 let telemetry: SessionTelemetryManager;
-let workerBridge: WorkerBridge;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Helpers
@@ -68,7 +66,6 @@ describe('Core Architecture', () => {
   beforeAll(async () => {
     conn = new CDPConnectionManager();
     nodeIndex = new ImmutableNodeIndex();
-    workerBridge = new WorkerBridge();
     telemetry = new SessionTelemetryManager('agent');
 
     const { page, cdpSession } = await conn.launch({ headless: true });
@@ -78,7 +75,6 @@ describe('Core Architecture', () => {
 
   afterAll(async () => {
     await conn.close();
-    await workerBridge.terminate();
   });
 
   // ── 1. CDPConnectionManager ─────────────────────────────────────────────
@@ -106,20 +102,20 @@ describe('Core Architecture', () => {
   describe('Semantic Surface', () => {
     it('should produce compressed Markdown from the AX tree', async () => {
       await conn.navigate(TEST_PAGE_URL);
-      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, workerBridge, nodeIndex);
+      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
       expect(result.markdown).toBeTruthy();
       expect(result.markdown.length).toBeGreaterThan(100);
       expect(result.nodeCount).toBeGreaterThan(0);
     });
 
     it('should include backendNodeId tags in the output', async () => {
-      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, workerBridge, nodeIndex);
+      const result = await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
       // Each interactive node should have an [id: NNN] tag
       expect(result.markdown).toMatch(/\[.*id: \d+.*\]/);
     });
 
     it('should populate the ImmutableNodeIndex', async () => {
-      await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, workerBridge, nodeIndex);
+      await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
       expect(nodeIndex.size).toBeGreaterThan(0);
     });
   });
@@ -178,7 +174,7 @@ describe('Core Architecture', () => {
   describe('State Delta', () => {
     it('should return null delta when nothing changed', async () => {
       await conn.navigate(TEST_PAGE_URL);
-      await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, workerBridge, nodeIndex);
+      await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
 
       // Checkpoint was taken during getSemanticSurface
       // Without any action, delta should be null or minimal
@@ -192,7 +188,7 @@ describe('Core Architecture', () => {
 
     it('should detect structural changes after DOM modification', async () => {
       await conn.navigate(TEST_PAGE_URL);
-      await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, workerBridge, nodeIndex);
+      await getSemanticSurface(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
       nodeIndex.checkpoint();
 
       // Add a new element to the DOM
@@ -208,12 +204,10 @@ describe('Core Architecture', () => {
       await new Promise(r => setTimeout(r, 200));
 
       const result = await getStateDelta(conn.getPage()!, conn.getCDPSession()!, nodeIndex);
-      expect(result.delta).toBeTruthy();
+      expect(result.text).toBeTruthy();
       // Should detect the new alert element
-      if (result.delta) {
-        const hasNewAlert = result.delta.added.some(n => n.role === 'alert');
-        expect(hasNewAlert).toBe(true);
-      }
+      expect(result.text).toContain('[alert]');
+      expect(result.text).toContain('Delta test');
     });
   });
 
