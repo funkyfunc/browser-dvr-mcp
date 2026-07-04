@@ -1,0 +1,9 @@
+tools/call browser_launch {"headless": true}
+tools/call browser_navigate {"url": "data:text/html,<input type='text' value='50' id='test'>"}
+tools/call get_semantic_surface {}
+tools/call browser_query_selector {"selector": "#test"}
+tools/call atomic_interact {"action": "type", "backendNodeId": 4, "text": "100", "clearFirst": true}
+tools/call get_semantic_surface {}
+tools/call atomic_interact {"action": "clear", "backendNodeId": 4}
+tools/call get_semantic_surface {}
+tools/call browser_close {}

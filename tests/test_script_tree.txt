@@ -1,0 +1,5 @@
+tools/call browser_launch {"headless": true}
+tools/call browser_navigate {"url": "https://example.com"}
+tools/call get_semantic_surface {}
+tools/call get_element_tree {"backendNodeId": 16}
+tools/call browser_close {}

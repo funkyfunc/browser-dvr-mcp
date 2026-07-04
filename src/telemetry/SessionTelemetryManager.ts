@@ -19,9 +19,165 @@ import {
   type SessionSummary,
 } from '../core/types.js';
 
+const MUTATION_INJECT_SCRIPT = `
+(function() {
+  if (window.__mcp_observer_initialized) return;
+  window.__mcp_observer_initialized = true;
+  window.__mcp_frame_prefix = Math.random().toString(36).substring(2, 6);
+  window.__mcp_id_seq = 1;
+  window.__mcp_mutations = [];
+  window.__mcp_cls = 0;
+
+  // Setup layout shift observer for CLS tracking
+  if (typeof PerformanceObserver !== 'undefined') {
+    try {
+      const clsObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (!entry.hadRecentInput) {
+            window.__mcp_cls += entry.value;
+          }
+        }
+      });
+      clsObserver.observe({ type: 'layout-shift', buffered: true });
+    } catch (e) {}
+  }
+
+  function getOrAssignId(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    let id = node.getAttribute('data-mcp-id');
+    if (!id) {
+      id = window.__mcp_frame_prefix + '-' + window.__mcp_id_seq++;
+      node.setAttribute('data-mcp-id', id);
+    }
+    return id;
+  }
+
+  function attachInputListener(el) {
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+      if (el.__mcp_input_listener_attached) return;
+      el.__mcp_input_listener_attached = true;
+      el.addEventListener('input', () => {
+        const id = getOrAssignId(el);
+        const payload = {
+          type: 'input',
+          targetId: id,
+          value: el.value,
+          timestamp: Date.now()
+        };
+        report(payload);
+      });
+    }
+  }
+
+  function report(payload) {
+    if (typeof window.__mcp_report_mutation === 'function') {
+      window.__mcp_report_mutation(payload).catch(() => {});
+    } else {
+      window.__mcp_mutations.push(payload);
+    }
+  }
+
+  function assignIdsRecursively(root) {
+    getOrAssignId(root);
+    attachInputListener(root);
+    const elements = root.querySelectorAll ? root.querySelectorAll('*') : [];
+    for (const el of elements) {
+      getOrAssignId(el);
+      attachInputListener(el);
+    }
+  }
+
+  // Run initial pass on document load
+  if (document.documentElement) {
+    assignIdsRecursively(document.documentElement);
+  }
+
+  // Also run on DOMContentLoaded just in case it executes early
+  document.addEventListener('DOMContentLoaded', () => {
+    if (document.documentElement) {
+      assignIdsRecursively(document.documentElement);
+    }
+  });
+
+  // Setup Observer for live tracking
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      const payload = {
+        type: mutation.type,
+        timestamp: Date.now(),
+      };
+
+      if (mutation.type === 'childList') {
+        const added = [];
+        for (const n of mutation.addedNodes) {
+          if (n.nodeType === Node.ELEMENT_NODE) {
+            assignIdsRecursively(n);
+            const id = getOrAssignId(n);
+            const descendants = [];
+            const childElements = n.querySelectorAll('*');
+            for (const c of childElements) {
+              descendants.push({
+                id: getOrAssignId(c),
+                tagName: c.tagName.toLowerCase(),
+                parentId: getOrAssignId(c.parentElement)
+              });
+            }
+            added.push({
+              id,
+              tagName: n.tagName.toLowerCase(),
+              parentId: getOrAssignId(mutation.target),
+              descendants
+            });
+          }
+        }
+
+        const removed = [];
+        for (const n of mutation.removedNodes) {
+          if (n.nodeType === Node.ELEMENT_NODE) {
+            const id = getOrAssignId(n);
+            removed.push({
+              id,
+              tagName: n.tagName.toLowerCase()
+            });
+          }
+        }
+
+        if (added.length === 0 && removed.length === 0) continue;
+        payload.addedNodes = added;
+        payload.removedNodes = removed;
+
+      } else if (mutation.type === 'attributes') {
+        if (mutation.attributeName === 'data-mcp-id') continue;
+        const id = getOrAssignId(mutation.target);
+        if (id === null) continue;
+        payload.targetId = id;
+        payload.attributeName = mutation.attributeName;
+        payload.attributeValue = mutation.target.getAttribute(mutation.attributeName);
+
+      } else if (mutation.type === 'characterData') {
+        const parentId = getOrAssignId(mutation.target.parentElement);
+        if (parentId === null) continue;
+        payload.parentId = parentId;
+        payload.newValue = mutation.target.nodeValue;
+      }
+
+      report(payload);
+    }
+  });
+
+  observer.observe(document, {
+    childList: true,
+    attributes: true,
+    characterData: true,
+    subtree: true
+  });
+})();
+`;
+
 let sessionCounter = 0;
 
 export class SessionTelemetryManager {
+  private drainInterval: NodeJS.Timeout | null = null;
   public readonly id: string;
   public readonly startedAt: number;
   public readonly mode: 'agent' | 'human';
@@ -57,6 +213,48 @@ export class SessionTelemetryManager {
    * This is the zero-overhead passive recording layer.
    */
   attachToPage(page: Page): void {
+    // Expose mutation reporting function to the browser
+    page.exposeFunction('__mcp_report_mutation', (mutation: any) => {
+      this.addMutation(mutation.type, mutation.targetId, mutation);
+    }).catch(() => {});
+
+    // Inject mutation tracker on document load
+    page.evaluateOnNewDocument(MUTATION_INJECT_SCRIPT).catch(() => {});
+
+    // Immediate injection into existing frames
+    page.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+    for (const frame of page.frames()) {
+      frame.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
+    }
+
+    // Set up polling interval to drain mutations from window.__mcp_mutations (fallback)
+    // and layout shifts from window.__mcp_cls
+    if (this.drainInterval) {
+      clearInterval(this.drainInterval);
+    }
+    this.drainInterval = setInterval(async () => {
+      try {
+        const result = await page.evaluate(() => {
+          const win = window as any;
+          const resMutations = win.__mcp_mutations || [];
+          win.__mcp_mutations = [];
+          const resCls = win.__mcp_cls || 0;
+          win.__mcp_cls = 0;
+          return { mutations: resMutations, cls: resCls };
+        });
+        if (result) {
+          for (const m of result.mutations) {
+            this.addMutation(m.type, m.targetId, m);
+          }
+          if (result.cls > 0) {
+            this.addLayoutShift(result.cls);
+          }
+        }
+      } catch {
+        // Page might be closed or navigated
+      }
+    }, 1000);
+
     // Console events
     page.on('console', (msg) => {
       this.consoleBuffer.push({
@@ -131,6 +329,13 @@ export class SessionTelemetryManager {
         errorText: req.failure()?.errorText,
       });
     });
+  }
+
+  destroy(): void {
+    if (this.drainInterval) {
+      clearInterval(this.drainInterval);
+      this.drainInterval = null;
+    }
   }
 
   /**

@@ -1,0 +1,4 @@
+tools/call browser_launch {"headless": true}
+tools/call browser_navigate {"url": "https://example.com"}
+tools/call browser_find_text_coordinates {"text": "example domain"}
+tools/call browser_close {}

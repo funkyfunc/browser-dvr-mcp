@@ -29,7 +29,7 @@ import {
   findFrameForBackendNodeId,
   atomicDragAndDrop,
 } from './layer1/atomicInteract.js';
-import { validateSpatialCoordinate, resolveElementCenter } from './layer1/spatialValidation.js';
+import { validateSpatialCoordinate, resolveElementCenter, getFrameOffset, resolveAndValidateSpatialCoordinate } from './layer1/spatialValidation.js';
 import { evaluateInContext, listFrameContexts } from './layer1/evaluateInContext.js';
 
 // Layer 2 perception
@@ -54,6 +54,7 @@ try {
 
 let telemetry: SessionTelemetryManager | null = null;
 let screencast: ScreencastManager | null = null;
+let fetchInterceptHandler: ((event: any) => Promise<void>) | null = null;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -124,14 +125,11 @@ server.registerTool(
     }
 
     // Initialize screencast (non-fatal if it fails — perception still works)
-    // Requires workerBridge for DVR frame buffering; skip if unavailable
-    if (workerBridge) {
-      screencast = new ScreencastManager(result.cdpSession, workerBridge);
-      try {
-        await screencast.start();
-      } catch (err) {
-        console.error('Screencast start failed (non-fatal):', err);
-      }
+    screencast = new ScreencastManager(result.cdpSession, workerBridge);
+    try {
+      await screencast.start();
+    } catch (err) {
+      console.error('Screencast start failed (non-fatal):', err);
     }
 
     return {
@@ -147,13 +145,20 @@ server.registerTool(
   },
   async () => {
     if (screencast) {
+      if (screencast.isRecordingActive()) {
+        await screencast.stopRecording().catch(() => {});
+      }
       await screencast.stop();
       screencast = null;
     }
+    fetchInterceptHandler = null;
     workerBridge?.clearBuffers();
     nodeIndex.clear();
     const result = await connectionManager.close();
-    telemetry = null;
+    if (telemetry) {
+      telemetry.destroy();
+      telemetry = null;
+    }
     return { content: [{ type: 'text', text: result }] };
   }
 );
@@ -261,7 +266,7 @@ server.registerTool(
         y = coordinate[1];
       } else if (backendNodeId !== undefined) {
         try {
-          const centerPt = await resolveElementCenter(page, cdp, backendNodeId, timeoutMs || 2000);
+          const centerPt = await resolveElementCenter(page, cdp, backendNodeId, timeoutMs || 2000, targetFrame);
           x = centerPt.x;
           y = centerPt.y;
           if (offset) {
@@ -277,26 +282,30 @@ server.registerTool(
         try {
           const iframeHandle = await targetFrame.frameElement();
           if (iframeHandle) {
-            const box = await iframeHandle.boundingBox();
-            if (box) {
+            const size = await iframeHandle.evaluate((el: Element) => {
+              const r = el.getBoundingClientRect();
+              return { width: r.width, height: r.height };
+            }).catch(() => null);
+            if (size) {
+              const frameOffset = await getFrameOffset(targetFrame);
               const isInside = (
-                x >= box.x &&
-                x <= box.x + box.width &&
-                y >= box.y &&
-                y <= box.y + box.height
+                x >= frameOffset.x &&
+                x <= frameOffset.x + size.width &&
+                y >= frameOffset.y &&
+                y <= frameOffset.y + size.height
               );
               if (!isInside) {
                 return {
                   content: [{
                     type: 'text',
-                    text: `Interaction failed: Calculated coordinate (${Math.round(x)}, ${Math.round(y)}) lies outside the parent iframe's visible boundaries (x: ${Math.round(box.x)}, y: ${Math.round(box.y)}, width: ${Math.round(box.width)}, height: ${Math.round(box.height)}). The iframe may be squished, clipped, or hidden by CSS layout constraints.`
+                    text: `Interaction failed: Calculated coordinate (${Math.round(x)}, ${Math.round(y)}) lies outside the parent iframe's visible boundaries (x: ${Math.round(frameOffset.x)}, y: ${Math.round(frameOffset.y)}, width: ${Math.round(size.width)}, height: ${Math.round(size.height)}). The iframe may be squished, clipped, or hidden by CSS layout constraints.`
                   }]
                 };
               }
             }
           }
         } catch {
-          // Fall back if frameElement or boundingBox fails
+          // Fall back if frameElement or evaluate fails
         }
       }
     }
@@ -372,28 +381,18 @@ server.registerTool(
         if (coordinate) {
           startPt = { x: coordinate[0], y: coordinate[1] };
         } else if (backendNodeId !== undefined) {
-          startPt = await resolveElementCenter(page, cdp, backendNodeId, timeoutMs || 2000);
-          if (offset) {
-            startPt.x += offset[0];
-            startPt.y += offset[1];
-          }
-        } else {
-          throw new Error('drag_and_drop requires either backendNodeId or coordinate.');
-        }
-
-        // Spatial validation on start point if backendNodeId is provided
-        if (backendNodeId !== undefined) {
-          const validation = await validateSpatialCoordinate(page, targetCdp, startPt.x, startPt.y, backendNodeId, targetFrame);
-          if (!validation.valid) {
+          const validation = await resolveAndValidateSpatialCoordinate(page, targetCdp, backendNodeId, timeoutMs || 2000, targetFrame, offset as [number, number]);
+          if (!validation.valid || !validation.coordinates) {
             result = {
               success: false,
               action: 'drag_and_drop',
-              coordinates: startPt,
-              feedback: `Spatial validation failed for drag start: ${validation.occluder || 'unknown obstruction'}`,
+              feedback: validation.error || 'Spatial validation failed for drag start',
             };
             break;
           }
           startPt = validation.coordinates;
+        } else {
+          throw new Error('drag_and_drop requires either backendNodeId or coordinate.');
         }
 
         // Resolve end point:
@@ -403,7 +402,7 @@ server.registerTool(
         } else if (dragToBackendNodeId !== undefined) {
           const destFrame = await findFrameForBackendNodeId(page, dragToBackendNodeId);
           const destCdp = (destFrame as any).client || cdp;
-          endPt = await resolveElementCenter(page, destCdp, dragToBackendNodeId, timeoutMs || 2000);
+          endPt = await resolveElementCenter(page, destCdp, dragToBackendNodeId, timeoutMs || 2000, destFrame);
         } else {
           throw new Error('drag_and_drop requires either dragToBackendNodeId or dragToCoordinate.');
         }
@@ -430,7 +429,7 @@ server.registerTool(
       'IMPORTANT: This is the tool that replaces framework-specific macros. Instead of using a React-specific sniffer, ' +
       'write the exact JS introspection you need. This keeps the MCP server unopinionated.',
     inputSchema: {
-      expression: z.string().describe('JavaScript expression to evaluate. The result is returned as JSON.'),
+      expression: z.string().optional().describe('JavaScript expression to evaluate. The result is returned as JSON. Omit to list available frames.'),
       frameIndex: z.number().optional().describe('Frame index to evaluate in (0 = main frame). Call with no args to list available frames.'),
       timeoutMs: z.number().optional().describe('Evaluation timeout in milliseconds (default: 5000)'),
     },
@@ -533,47 +532,88 @@ server.registerTool(
       'Options:\n' +
       '• fullPage — Capture the entire scrollable page, not just the viewport.\n' +
       '• backendNodeId — Capture just a specific element by its backend node ID.\n' +
-      '• savePath — Save the image to disk instead of returning inline.',
+      '• savePath — Save the image to disk instead of returning inline.\n' +
+      '• highlightNodeIds — Temporarily draw a red border around these elements in the screenshot.',
     inputSchema: {
       backendNodeId: z.number().optional().describe('Capture only this element'),
       fullPage: z.boolean().optional().describe('Capture entire scrollable page (default: false)'),
       format: z.enum(['png', 'jpeg']).optional().describe('Image format (default: jpeg)'),
       quality: z.number().optional().describe('JPEG quality 0-100 (default: 60)'),
       savePath: z.string().optional().describe('Absolute file path to save the image'),
+      highlightNodeIds: z.array(z.number()).optional().describe('Optional list of backendNodeIds to highlight with a red border in the screenshot'),
     },
   },
   async (args) => {
-    const { page, cdp } = requireSession();
+    const { page } = requireSession();
 
     const format = args.format || 'jpeg';
     const quality = args.quality ?? 60;
 
     let buffer: string;
 
-    if (args.backendNodeId !== undefined) {
-      const { model } = await cdp.send('DOM.getBoxModel', {
-        backendNodeId: args.backendNodeId,
-      }) as { model: { content: number[] } };
+    const cleanups: (() => Promise<void>)[] = [];
+    if (args.highlightNodeIds && args.highlightNodeIds.length > 0) {
+      for (const id of args.highlightNodeIds) {
+        try {
+          const frame = await findFrameForBackendNodeId(page, id);
+          const handle = await (frame as any).mainRealm().adoptBackendNode(id);
+          if (handle) {
+            const originalStyle = await handle.evaluate((el: any) => {
+              const prev = el.style.outline;
+              const prevOffset = el.style.outlineOffset;
+              el.style.setProperty('outline', '3px solid #ff3b30', 'important');
+              el.style.setProperty('outline-offset', '2px', 'important');
+              return { prev, prevOffset };
+            });
+            cleanups.push(async () => {
+              await handle.evaluate((el: any, orig: any) => {
+                el.style.outline = orig.prev;
+                el.style.outlineOffset = orig.prevOffset;
+              }, originalStyle).catch(() => {});
+              await handle.dispose().catch(() => {});
+            });
+          }
+        } catch (err) {
+          console.error(`Failed to highlight node ${id}:`, err);
+        }
+      }
+    }
 
-      const q = model.content;
-      const x = Math.min(q[0], q[2], q[4], q[6]);
-      const y = Math.min(q[1], q[3], q[5], q[7]);
-      const width = Math.max(q[0], q[2], q[4], q[6]) - x;
-      const height = Math.max(q[1], q[3], q[5], q[7]) - y;
+    try {
+      if (args.backendNodeId !== undefined) {
+        const frame = await findFrameForBackendNodeId(page, args.backendNodeId);
+        const handle = await (frame as any).mainRealm().adoptBackendNode(args.backendNodeId);
+        if (!handle) throw new Error(`Cannot resolve backendNodeId ${args.backendNodeId}`);
 
-      const result = await cdp.send('Page.captureScreenshot', {
-        format,
-        quality: format === 'jpeg' ? quality : undefined,
-        clip: { x, y, width, height, scale: 1 },
-      });
-      buffer = (result as { data: string }).data;
-    } else {
-      buffer = (await page.screenshot({
-        encoding: 'base64',
-        type: format,
-        quality: format === 'jpeg' ? quality : undefined,
-        fullPage: args.fullPage ?? false,
-      })) as string;
+        const rect = await handle.evaluate((el: Element) => {
+          const r = el.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height };
+        });
+        const frameOffset = await getFrameOffset(frame);
+        const x = rect.x + frameOffset.x;
+        const y = rect.y + frameOffset.y;
+        const width = rect.width;
+        const height = rect.height;
+        await handle.dispose();
+
+        buffer = (await page.screenshot({
+          encoding: 'base64',
+          type: format,
+          quality: format === 'jpeg' ? quality : undefined,
+          clip: { x, y, width, height },
+        })) as string;
+      } else {
+        buffer = (await page.screenshot({
+          encoding: 'base64',
+          type: format,
+          quality: format === 'jpeg' ? quality : undefined,
+          fullPage: args.fullPage ?? false,
+        })) as string;
+      }
+    } finally {
+      for (const cleanup of cleanups) {
+        await cleanup().catch(() => {});
+      }
     }
 
     const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
@@ -594,6 +634,53 @@ server.registerTool(
     return {
       content: [{ type: 'image' as const, data: buffer, mimeType }],
     };
+  }
+);
+
+server.registerTool(
+  'browser_start_recording',
+  {
+    description:
+      'Start recording screencast frames in the background to compile a video. ' +
+      'Auto-stops after 5 minutes of inactivity. Call browser_stop_recording to compile and finalize.',
+    inputSchema: {
+      outputDir: z.string().optional().describe('Optional directory to save frames and video (defaults to recordings/rec_<timestamp>)'),
+    },
+  },
+  async ({ outputDir }) => {
+    requireSession();
+    if (!screencast) {
+      throw new Error('Screencast not initialized. Launch browser first.');
+    }
+    const result = await screencast.startRecording(outputDir);
+    return { content: [{ type: 'text', text: result }] };
+  }
+);
+
+server.registerTool(
+  'browser_stop_recording',
+  {
+    description: 'Stop the active recording and compile the frames into an MP4 video using FFmpeg.',
+  },
+  async () => {
+    requireSession();
+    if (!screencast) {
+      throw new Error('Screencast not initialized. Launch browser first.');
+    }
+    const result = await screencast.stopRecording();
+    const lines = [
+      `Recording stopped successfully.`,
+      `Output directory: ${result.outputDir}`,
+      `Total frames: ${result.frameCount}`,
+      `Duration: ${result.durationSeconds}s`,
+      `Manifest: ${result.manifestPath}`,
+    ];
+    if (result.videoPath) {
+      lines.push(`Compiled Video: ${result.videoPath}`);
+    } else {
+      lines.push(`⚠ Video compilation failed (FFmpeg binary could not compile the frames).`);
+    }
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
 );
 
@@ -745,32 +832,57 @@ server.registerTool(
     inputSchema: {
       backendNodeId: z.number().describe('The backend DOM node ID of the target element'),
       properties: z.array(z.string()).optional().describe('Optional list of CSS properties to filter by (e.g., ["color", "font-size"])'),
+      frameIndex: z.number().optional().describe('Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)'),
     },
   },
-  async ({ backendNodeId, properties }) => {
-    const { cdp } = requireSession();
+  async ({ backendNodeId, properties, frameIndex }) => {
+    const { page, cdp } = requireSession();
+
+    let targetFrame = page.mainFrame();
+    if (frameIndex !== undefined) {
+      const frames = page.frames();
+      if (frameIndex < 0 || frameIndex >= frames.length) {
+        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+      }
+      targetFrame = frames[frameIndex];
+    } else {
+      targetFrame = await findFrameForBackendNodeId(page, backendNodeId);
+    }
+
+    const targetCdp = (targetFrame as any).client || cdp;
     
-    // Ensure DOM and CSS domains are enabled
-    await cdp.send('DOM.enable');
-    await cdp.send('CSS.enable');
+    await targetCdp.send('DOM.enable');
     
-    let nodeId: number;
+    const { object } = await targetCdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
+    if (!object?.objectId) throw new Error(`Cannot resolve node ${backendNodeId}`);
+
     try {
-      const result = await cdp.send('DOM.describeNode', { backendNodeId });
-      nodeId = result.node.nodeId;
-    } catch (err: any) {
-      throw new Error(`Failed to resolve node for backendNodeId ${backendNodeId}: ${err.message}`);
+      const evalResult = await targetCdp.send('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration: `function(props) {
+          const style = window.getComputedStyle(this);
+          const res = {};
+          if (props && props.length > 0) {
+            for (const prop of props) {
+              res[prop] = style.getPropertyValue(prop) || style[prop] || '';
+            }
+          } else {
+            for (let i = 0; i < style.length; i++) {
+              const prop = style[i];
+              res[prop] = style.getPropertyValue(prop);
+            }
+          }
+          return res;
+        }`,
+        arguments: properties ? [{ value: properties }] : undefined,
+        returnByValue: true,
+      }) as { result: { value: any } };
+
+      const styleObj = evalResult.result.value || {};
+      return { content: [{ type: 'text', text: JSON.stringify(styleObj, null, 2) }] };
+    } finally {
+      await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
     }
-    
-    const { computedStyle } = await cdp.send('CSS.getComputedStyleForNode', { nodeId });
-    
-    let filteredStyles = computedStyle;
-    if (properties && properties.length > 0) {
-      filteredStyles = computedStyle.filter(p => properties.includes(p.name));
-    }
-    
-    const styleObj = Object.fromEntries(filteredStyles.map(p => [p.name, p.value]));
-    return { content: [{ type: 'text', text: JSON.stringify(styleObj, null, 2) }] };
   }
 );
 
@@ -795,8 +907,23 @@ server.registerTool(
     },
   },
   async ({ url }) => {
+    if (screencast) {
+      await screencast.stop().catch(() => {});
+      screencast = null;
+    }
     const result = await humanRecording.start(url);
     telemetry = result.telemetry;
+
+    const activeCdp = connectionManager.getCDPSession();
+    if (activeCdp) {
+      screencast = new ScreencastManager(activeCdp, workerBridge);
+      try {
+        await screencast.start();
+      } catch (err) {
+        console.error('Screencast start failed (non-fatal):', err);
+      }
+    }
+
     return { content: [{ type: 'text', text: result.message }] };
   }
 );
@@ -836,7 +963,7 @@ server.registerTool(
     },
   },
   async ({ selector, visibleOnly, timeoutMs = 0 }) => {
-    const { cdp } = requireSession();
+    const { page, cdp } = requireSession();
 
     const isXPath = selector.startsWith('xpath/');
 
@@ -846,79 +973,90 @@ server.registerTool(
     const startTime = Date.now();
     const deadline = startTime + (timeoutMs || 0);
 
-    do {
+    async function queryElements(frame: any, sel: string, isXP: boolean): Promise<any[]> {
+      if (!isXP) {
+        return await frame.$$(sel).catch(() => []);
+      }
       try {
-        // Use pure CDP for robust cross-version compatibility.
-        // DOM.querySelectorAll returns nodeIds, DOM.describeNode gives us backendNodeIds.
-        const { root } = await cdp.send('DOM.getDocument', { depth: 0 }) as { root: { nodeId: number } };
-
-        let nodeIds: number[] = [];
-        if (isXPath) {
-          // XPath via CDP
-          const xpathExpr = selector.slice('xpath/'.length);
-          const { searchId, resultCount } = await cdp.send('DOM.performSearch', { query: xpathExpr }) as { searchId: string; resultCount: number };
-          if (resultCount > 0) {
-            const { nodeIds: found } = await cdp.send('DOM.getSearchResults', { searchId, fromIndex: 0, toIndex: resultCount }) as { nodeIds: number[] };
-            nodeIds = found;
+        const xpathExpr = sel.slice('xpath/'.length);
+        const arrayHandle = await frame.evaluateHandle((xp: string) => {
+          const elements: Element[] = [];
+          const result = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          for (let i = 0; i < result.snapshotLength; i++) {
+            const el = result.snapshotItem(i);
+            if (el && el.nodeType === 1) elements.push(el as Element);
           }
-          await cdp.send('DOM.discardSearchResults', { searchId }).catch(() => {});
-        } else {
-          // CSS selector via CDP
-          const { nodeIds: found } = await cdp.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector }) as { nodeIds: number[] };
-          nodeIds = found;
+          return elements;
+        }, xpathExpr);
+
+        const properties = await arrayHandle.getProperties();
+        const handles: any[] = [];
+        for (const property of properties.values()) {
+          const elementHandle = property.asElement();
+          if (elementHandle) {
+            handles.push(elementHandle);
+          }
         }
+        await arrayHandle.dispose();
+        return handles;
+      } catch {
+        return [];
+      }
+    }
 
-        for (const nodeId of nodeIds) {
-          try {
-            // Get backendNodeId and tag name from CDP
-            const { node } = await cdp.send('DOM.describeNode', { nodeId }) as {
-              node: { backendNodeId: number; nodeName: string; nodeType: number };
-            };
-
-            // Get bounding box via getBoxModel (may fail for invisible elements)
-            let boundingBox: { x: number; y: number; width: number; height: number } | null = null;
+    do {
+      matches.length = 0; // Clear matches on retry
+      try {
+        for (const frame of page.frames()) {
+          const handles = await queryElements(frame, selector, isXPath);
+          for (const handle of handles) {
             try {
-              const { model } = await cdp.send('DOM.getBoxModel', { nodeId }) as {
-                model: { content: number[] };
-              };
-              // content quad: [x1,y1, x2,y2, x3,y3, x4,y4]
-              const q = model.content;
-              boundingBox = {
-                x: Math.min(q[0], q[2], q[4], q[6]),
-                y: Math.min(q[1], q[3], q[5], q[7]),
-                width: Math.max(q[0], q[2], q[4], q[6]) - Math.min(q[0], q[2], q[4], q[6]),
-                height: Math.max(q[1], q[3], q[5], q[7]) - Math.min(q[1], q[3], q[5], q[7]),
-              };
-            } catch {
-              // Element may be invisible — no box model
-              if (visibleOnly) continue;
-            }
+              const rect = await handle.evaluate((el: Element) => {
+                const r = el.getBoundingClientRect();
+                const visible = r.width > 0 && r.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+                return {
+                  x: r.x,
+                  y: r.y,
+                  width: r.width,
+                  height: r.height,
+                  visible,
+                  tagName: el.tagName.toLowerCase(),
+                  text: (el as HTMLElement).innerText || el.textContent || ''
+                };
+              });
 
-            if (visibleOnly && (!boundingBox || boundingBox.width === 0 || boundingBox.height === 0)) continue;
-
-            // Get text content via Runtime
-            let text = '';
-            try {
-              const { object } = await cdp.send('DOM.resolveNode', { nodeId }) as { object: { objectId?: string } };
-              if (object?.objectId) {
-                const evalResult = await cdp.send('Runtime.callFunctionOn', {
-                  objectId: object.objectId,
-                  functionDeclaration: `function() { return (this.innerText || this.textContent || '').substring(0, 200).trim(); }`,
-                  returnByValue: true,
-                }) as { result: { value: unknown } };
-                text = String(evalResult.result.value || '');
-                await cdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+              if (visibleOnly && !rect.visible) {
+                await handle.dispose().catch(() => {});
+                continue;
               }
-            } catch { /* text extraction failed — non-fatal */ }
 
-            matches.push({
-              tag: node.nodeName.toLowerCase(),
-              text,
-              backendNodeId: node.backendNodeId,
-              boundingBox,
-            });
-          } catch (err) {
-            errors.push(`Node ${nodeId}: ${err instanceof Error ? err.message : String(err)}`);
+              const frameCdp = (frame as any).client || cdp;
+              const remoteObject = (handle as any).remoteObject?.() || (handle as any)._remoteObject;
+              let backendNodeId: number | undefined;
+              if (remoteObject?.objectId) {
+                const { node } = await frameCdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
+                backendNodeId = node.backendNodeId;
+              }
+
+              if (backendNodeId !== undefined) {
+                const frameOffset = await getFrameOffset(frame);
+                matches.push({
+                  tag: rect.tagName,
+                  text: rect.text.substring(0, 200).trim(),
+                  backendNodeId,
+                  boundingBox: rect.visible ? {
+                    x: rect.x + frameOffset.x,
+                    y: rect.y + frameOffset.y,
+                    width: rect.width,
+                    height: rect.height
+                  } : null
+                });
+              }
+            } catch (err) {
+              errors.push(`Frame ${frame.url()}: ${err instanceof Error ? err.message : String(err)}`);
+            } finally {
+              await handle.dispose().catch(() => {});
+            }
           }
         }
       } catch (err) {
@@ -929,7 +1067,6 @@ server.registerTool(
       await new Promise(r => setTimeout(r, 200));
     } while (Date.now() < deadline);
 
-    // Include errors in the response if no matches found, so agents can diagnose
     const response: Record<string, unknown> = { matches };
     if (matches.length === 0 && errors.length > 0) {
       response.diagnostics = errors;
@@ -1200,9 +1337,14 @@ server.registerTool(
   async ({ pattern, action, delayMs }) => {
     const { cdp } = requireSession();
 
+    if (fetchInterceptHandler) {
+      cdp.off('Fetch.requestPaused', fetchInterceptHandler);
+      fetchInterceptHandler = null;
+    }
+
     await cdp.send('Fetch.enable', { patterns: [{ urlPattern: pattern }] });
 
-    cdp.on('Fetch.requestPaused', async (event: { requestId: string }) => {
+    fetchInterceptHandler = async (event: { requestId: string }) => {
       if (action === 'fail') {
         await cdp.send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'Failed' }).catch(() => {});
       } else if (action === 'delay' && delayMs) {
@@ -1212,7 +1354,9 @@ server.registerTool(
       } else {
         await cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
       }
-    });
+    };
+
+    cdp.on('Fetch.requestPaused', fetchInterceptHandler);
 
     return { content: [{ type: 'text', text: `Interception enabled: ${pattern} → ${action}${delayMs ? ` (${delayMs}ms)` : ''}` }] };
   }
@@ -1226,6 +1370,10 @@ server.registerTool(
   async () => {
     const { cdp } = requireSession();
     await cdp.send('Fetch.disable');
+    if (fetchInterceptHandler) {
+      cdp.off('Fetch.requestPaused', fetchInterceptHandler);
+      fetchInterceptHandler = null;
+    }
     return { content: [{ type: 'text', text: 'Request interception disabled.' }] };
   }
 );
@@ -1412,19 +1560,33 @@ server.registerTool(
       'Useful for understanding interactive behavior before dispatching events.',
     inputSchema: {
       backendNodeId: z.number().describe('Backend DOM node ID of the element'),
+      frameIndex: z.number().optional().describe('Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)'),
     },
   },
-  async ({ backendNodeId }) => {
-    const { cdp } = requireSession();
+  async ({ backendNodeId, frameIndex }) => {
+    const { page, cdp } = requireSession();
 
-    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
+    let targetFrame = page.mainFrame();
+    if (frameIndex !== undefined) {
+      const frames = page.frames();
+      if (frameIndex < 0 || frameIndex >= frames.length) {
+        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+      }
+      targetFrame = frames[frameIndex];
+    } else {
+      targetFrame = await findFrameForBackendNodeId(page, backendNodeId);
+    }
+
+    const targetCdp = (targetFrame as any).client || cdp;
+
+    const { object } = await targetCdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
     if (!object?.objectId) throw new Error(`Cannot resolve node ${backendNodeId}`);
 
     try {
-      const response = await cdp.send('DOMDebugger.getEventListeners', { objectId: object.objectId });
+      const response = await targetCdp.send('DOMDebugger.getEventListeners', { objectId: object.objectId });
       return { content: [{ type: 'text', text: JSON.stringify(response.listeners, null, 2) }] };
     } finally {
-      await cdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+      await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
     }
   }
 );
@@ -1453,31 +1615,45 @@ server.registerTool(
     inputSchema: {
       backendNodeId: z.number().optional().describe('Backend node ID of the element. Omit to get document.documentElement.outerHTML.'),
       maxLength: z.number().optional().describe('Truncate HTML output to this many characters (default: 5000). Set higher for full inspection.'),
+      frameIndex: z.number().optional().describe('Optional frame index to force context (e.g., 0 for main frame, 1 for first iframe, etc.)'),
     },
   },
-  async ({ backendNodeId, maxLength = 5000 }) => {
+  async ({ backendNodeId, maxLength = 5000, frameIndex }) => {
     const { page, cdp } = requireSession();
+
+    let targetFrame = page.mainFrame();
+    if (frameIndex !== undefined) {
+      const frames = page.frames();
+      if (frameIndex < 0 || frameIndex >= frames.length) {
+        throw new Error(`Frame index ${frameIndex} out of range. Available frames: ${frames.length}.`);
+      }
+      targetFrame = frames[frameIndex];
+    } else if (backendNodeId !== undefined) {
+      targetFrame = await findFrameForBackendNodeId(page, backendNodeId);
+    }
+
+    const targetCdp = (targetFrame as any).client || cdp;
 
     let html: string;
 
     if (backendNodeId !== undefined) {
-      // Get outerHTML of a specific node via CDP
-      const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
+      // Get outerHTML of a specific node via target frame's CDP
+      const { object } = await targetCdp.send('DOM.resolveNode', { backendNodeId }) as { object: { objectId?: string } };
       if (!object?.objectId) throw new Error(`Cannot resolve node ${backendNodeId}. It may have been destroyed by a re-render.`);
 
       try {
-        const result = await cdp.send('Runtime.callFunctionOn', {
+        const result = await targetCdp.send('Runtime.callFunctionOn', {
           objectId: object.objectId,
           functionDeclaration: `function() { return this.outerHTML; }`,
           returnByValue: true,
         }) as { result: { value: unknown } };
         html = String(result.result.value || '');
       } finally {
-        await cdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+        await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
       }
     } else {
-      // Get the entire document root
-      html = await page.evaluate(() => document.documentElement.outerHTML) as string;
+      // Get the document root of the target frame
+      html = await targetFrame.evaluate(() => document.documentElement.outerHTML) as string;
     }
 
     const truncated = html.length > maxLength;

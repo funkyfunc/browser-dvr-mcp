@@ -13,7 +13,7 @@
 // - No Puppeteer overhead or abstraction leakage
 
 import type { CDPSession, Page, Frame } from 'puppeteer-core';
-import { validateSpatialCoordinate, resolveElementCenter } from './spatialValidation.js';
+import { resolveAndValidateSpatialCoordinate } from './spatialValidation.js';
 import type { SessionTelemetryManager } from '../telemetry/SessionTelemetryManager.js';
 
 export interface AtomicInteractResult {
@@ -34,20 +34,21 @@ export async function atomicClick(
   telemetry: SessionTelemetryManager,
   options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
-  if (options.offset) {
-    x += options.offset[0];
-    y += options.offset[1];
-  }
+  // Resolve center & check spatial validation with retry
+  const validation = await resolveAndValidateSpatialCoordinate(
+    page,
+    cdpSession,
+    backendNodeId,
+    options.timeoutMs || 2000,
+    options.frame,
+    options.offset
+  );
 
-  // Spatial validation
-  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
-  if (!validation.valid) {
+  if (!validation.valid || !validation.coordinates) {
     return {
       success: false,
       action: 'click',
-      coordinates: { x, y },
-      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+      feedback: validation.error || 'Spatial validation failed',
     };
   }
 
@@ -153,20 +154,21 @@ export async function atomicDoubleClick(
   telemetry: SessionTelemetryManager,
   options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
-  if (options.offset) {
-    x += options.offset[0];
-    y += options.offset[1];
-  }
+  // Resolve center & check spatial validation with retry
+  const validation = await resolveAndValidateSpatialCoordinate(
+    page,
+    cdpSession,
+    backendNodeId,
+    options.timeoutMs || 2000,
+    options.frame,
+    options.offset
+  );
 
-  // Spatial validation
-  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
-  if (!validation.valid) {
+  if (!validation.valid || !validation.coordinates) {
     return {
       success: false,
       action: 'dblclick',
-      coordinates: { x, y },
-      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+      feedback: validation.error || 'Spatial validation failed',
     };
   }
 
@@ -231,20 +233,21 @@ export async function atomicType(
   telemetry: SessionTelemetryManager,
   options: { timeoutMs?: number; clearFirst?: boolean; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
-  if (options.offset) {
-    x += options.offset[0];
-    y += options.offset[1];
-  }
+  // Resolve center & check spatial validation with retry
+  const validation = await resolveAndValidateSpatialCoordinate(
+    page,
+    cdpSession,
+    backendNodeId,
+    options.timeoutMs || 2000,
+    options.frame,
+    options.offset
+  );
 
-  // Spatial validation
-  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
-  if (!validation.valid) {
+  if (!validation.valid || !validation.coordinates) {
     return {
       success: false,
       action: 'type',
-      coordinates: { x, y },
-      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+      feedback: validation.error || 'Spatial validation failed',
     };
   }
 
@@ -304,20 +307,21 @@ export async function atomicClear(
   telemetry: SessionTelemetryManager,
   options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
-  if (options.offset) {
-    x += options.offset[0];
-    y += options.offset[1];
-  }
+  // Resolve center & check spatial validation with retry
+  const validation = await resolveAndValidateSpatialCoordinate(
+    page,
+    cdpSession,
+    backendNodeId,
+    options.timeoutMs || 2000,
+    options.frame,
+    options.offset
+  );
 
-  // Spatial validation
-  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
-  if (!validation.valid) {
+  if (!validation.valid || !validation.coordinates) {
     return {
       success: false,
       action: 'clear',
-      coordinates: { x, y },
-      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+      feedback: validation.error || 'Spatial validation failed',
     };
   }
 
@@ -373,20 +377,21 @@ export async function atomicHover(
   telemetry: SessionTelemetryManager,
   options: { timeoutMs?: number; offset?: [number, number]; frame?: Frame } = {}
 ): Promise<AtomicInteractResult> {
-  let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, options.timeoutMs || 2000);
-  if (options.offset) {
-    x += options.offset[0];
-    y += options.offset[1];
-  }
+  // Resolve center & check spatial validation with retry
+  const validation = await resolveAndValidateSpatialCoordinate(
+    page,
+    cdpSession,
+    backendNodeId,
+    options.timeoutMs || 2000,
+    options.frame,
+    options.offset
+  );
 
-  // Spatial validation
-  const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, options.frame);
-  if (!validation.valid) {
+  if (!validation.valid || !validation.coordinates) {
     return {
       success: false,
       action: 'hover',
-      coordinates: { x, y },
-      feedback: `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`,
+      feedback: validation.error || 'Spatial validation failed',
     };
   }
 

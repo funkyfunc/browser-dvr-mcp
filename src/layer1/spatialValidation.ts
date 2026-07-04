@@ -10,6 +10,41 @@ import type { CDPSession, Page, Frame } from 'puppeteer-core';
 import type { SpatialValidationResult, BoundingBox } from '../core/types.js';
 
 /**
+ * Recursively calculates the absolute coordinate offset of a frame relative to the main viewport.
+ * Uses a cycle guard (Set<Frame>) and loop depth limit to prevent infinite loops.
+ */
+export async function getFrameOffset(frame: Frame): Promise<{ x: number; y: number }> {
+  let offsetX = 0;
+  let offsetY = 0;
+  let currentFrame: Frame | null = frame;
+  const visited = new Set<Frame>();
+  let depth = 0;
+  const MAX_DEPTH = 15;
+
+  while (currentFrame && currentFrame.parentFrame()) {
+    if (visited.has(currentFrame) || depth >= MAX_DEPTH) {
+      break;
+    }
+    visited.add(currentFrame);
+    depth++;
+
+    const frameElement = await currentFrame.frameElement();
+    if (frameElement) {
+      const rect = await frameElement.evaluate((el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y };
+      }).catch(() => null);
+      if (rect) {
+        offsetX += rect.x;
+        offsetY += rect.y;
+      }
+    }
+    currentFrame = currentFrame.parentFrame();
+  }
+  return { x: offsetX, y: offsetY };
+}
+
+/**
  * Validates that coordinates (x, y) actually hit the intended target.
  * Uses CDP to resolve the element at the point and check containment.
  */
@@ -74,14 +109,9 @@ export async function validateSpatialCoordinate(
     let localX = centerX;
     let localY = centerY;
     if (targetFrame !== page.mainFrame()) {
-      const iframeHandle = await targetFrame.frameElement();
-      if (iframeHandle) {
-        const box = await iframeHandle.boundingBox();
-        if (box) {
-          localX = centerX - box.x;
-          localY = centerY - box.y;
-        }
-      }
+      const offset = await getFrameOffset(targetFrame);
+      localX = centerX - offset.x;
+      localY = centerY - offset.y;
     }
 
     // Check what's actually at the center of the target (within targetFrame's context using local coords)
@@ -123,9 +153,17 @@ export async function validateSpatialCoordinate(
 
     // Verify via CDP (using the target frame's session) that the topmost node at point matches our target
     try {
+      // Determine what coordinates to pass to CDP DOM.getNodeForLocation.
+      // If cdpSession is a subframe-specific session (OOPIF target), we pass frame-local coordinates.
+      // Otherwise, cdpSession is the main page session, so we pass global coordinates.
+      const isSubframeSession = targetFrame !== page.mainFrame() &&
+                                (cdpSession as any).target()?.type() === 'iframe';
+      const cdpX = isSubframeSession ? localX : centerX;
+      const cdpY = isSubframeSession ? localY : centerY;
+
       const nodeAtPoint = await cdpSession.send('DOM.getNodeForLocation', {
-        x: Math.round(localX),
-        y: Math.round(localY),
+        x: Math.round(cdpX),
+        y: Math.round(cdpY),
         includeUserAgentShadowDOM: false,
       }) as { backendNodeId: number; frameId?: string; nodeId?: number };
 
@@ -199,7 +237,8 @@ export async function resolveElementCenter(
   page: Page,
   cdpSession: CDPSession,
   backendNodeId: number,
-  timeoutMs: number = 2000
+  timeoutMs: number = 2000,
+  frame?: Frame
 ): Promise<{ x: number; y: number }> {
   const startTime = Date.now();
 
@@ -219,14 +258,28 @@ export async function resolveElementCenter(
         throw new Error(`Element (backendNodeId: ${backendNodeId}) has zero dimensions.`);
       }
 
+      let centerX = x + width / 2;
+      let centerY = y + height / 2;
+
+      // If cdpSession is a subframe-specific session (OOPIF target), the coordinates are subframe-local,
+      // so we must add the frame's offset to make them global.
+      const isSubframeSession = frame &&
+                                frame !== page.mainFrame() &&
+                                (cdpSession as any).target()?.type() === 'iframe';
+      if (isSubframeSession) {
+        const offset = await getFrameOffset(frame);
+        centerX += offset.x;
+        centerY += offset.y;
+      }
+
       // Clamp to viewport
       const viewport = await page.evaluate(() => ({
         width: window.innerWidth,
         height: window.innerHeight,
       }));
 
-      const clampedX = Math.max(0, Math.min(x + width / 2, viewport.width));
-      const clampedY = Math.max(0, Math.min(y + height / 2, viewport.height));
+      const clampedX = Math.max(0, Math.min(centerX, viewport.width));
+      const clampedY = Math.max(0, Math.min(centerY, viewport.height));
 
       return { x: clampedX, y: clampedY };
     } catch (err) {
@@ -237,5 +290,48 @@ export async function resolveElementCenter(
       }
       await new Promise(r => setTimeout(r, 200));
     }
+  }
+}
+
+/**
+ * Resolves element center and validates spatial coordinates with retry/polling.
+ * Re-resolves coordinates if the element moves during the retry sequence.
+ */
+export async function resolveAndValidateSpatialCoordinate(
+  page: Page,
+  cdpSession: CDPSession,
+  backendNodeId: number,
+  timeoutMs: number = 2000,
+  frame?: Frame,
+  offset?: [number, number]
+): Promise<{ valid: boolean; coordinates?: { x: number; y: number }; error?: string }> {
+  const startTime = Date.now();
+  let lastError = 'Unknown error';
+
+  while (true) {
+    try {
+      // Resolve element center using 500ms inner timeout to prevent single check blocking too long
+      let { x, y } = await resolveElementCenter(page, cdpSession, backendNodeId, 500, frame);
+      if (offset) {
+        x += offset[0];
+        y += offset[1];
+      }
+
+      // Check occlusion
+      const validation = await validateSpatialCoordinate(page, cdpSession, x, y, backendNodeId, frame);
+      if (validation.valid) {
+        return { valid: true, coordinates: validation.coordinates };
+      }
+
+      lastError = `Spatial validation failed: ${validation.occluder || 'unknown obstruction'}`;
+    } catch (err: any) {
+      lastError = err.message || String(err);
+    }
+
+    if (Date.now() - startTime >= timeoutMs) {
+      return { valid: false, error: lastError };
+    }
+
+    await new Promise(r => setTimeout(r, 100));
   }
 }
