@@ -571,17 +571,45 @@ server.registerTool(
           const frame = await findFrameForBackendNodeId(page, id);
           const handle = await (frame as any).mainRealm().adoptBackendNode(id);
           if (handle) {
-            const originalStyle = await handle.evaluate((el: any) => {
-              const prev = el.style.outline;
-              const prevOffset = el.style.outlineOffset;
+            const originalStyle = await handle.evaluate((el: any, nodeId: number) => {
+              const prevOutline = el.style.outline;
+              const prevOutlineOffset = el.style.outlineOffset;
               el.style.setProperty('outline', '3px solid #ff3b30', 'important');
               el.style.setProperty('outline-offset', '2px', 'important');
-              return { prev, prevOffset };
-            });
+
+              // Create floating label badge above the element
+              const badge = document.createElement('div');
+              badge.id = `mcp-highlight-label-${nodeId}`;
+              badge.textContent = `ID: ${nodeId}`;
+              badge.style.cssText = `
+                position: absolute;
+                background: #ff3b30;
+                color: white;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 2px 6px;
+                border-radius: 4px;
+                z-index: 2147483647;
+                pointer-events: none;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                white-space: nowrap;
+              `;
+
+              const rect = el.getBoundingClientRect();
+              badge.style.top = `${window.scrollY + rect.top - 20}px`;
+              badge.style.left = `${window.scrollX + rect.left}px`;
+              document.body.appendChild(badge);
+
+              return { prevOutline, prevOutlineOffset, badgeId: badge.id };
+            }, id);
+
             cleanups.push(async () => {
               await handle.evaluate((el: any, orig: any) => {
-                el.style.outline = orig.prev;
-                el.style.outlineOffset = orig.prevOffset;
+                el.style.outline = orig.prevOutline;
+                el.style.outlineOffset = orig.prevOutlineOffset;
+                const badge = document.getElementById(orig.badgeId);
+                if (badge) badge.remove();
               }, originalStyle).catch(() => {});
               await handle.dispose().catch(() => {});
             });
@@ -650,118 +678,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
-  'browser_screenshot_highlight',
-  {
-    description:
-      'Capture a screenshot of the current page with specified elements highlighted using a visual border and a label badge containing their backendNodeId. ' +
-      'Highly useful for interactive layout, boundary, and coordinate debugging.',
-    inputSchema: {
-      backendNodeIds: z.array(z.number()).describe('Array of backend DOM node IDs to highlight in the screenshot'),
-      fullPage: z.boolean().optional().describe('Capture the entire scrollable page (default: false)'),
-      format: z.enum(['png', 'jpeg']).optional().describe('Image format (default: jpeg)'),
-      quality: z.number().optional().describe('JPEG quality 0-100 (default: 60)'),
-      savePath: z.string().optional().describe('Optional absolute or relative file path to save the highlighted image'),
-    },
-  },
-  async (args) => {
-    const { page } = requireSession();
 
-    const format = args.format || 'jpeg';
-    const quality = args.quality ?? 60;
-
-    let buffer: string;
-
-    const cleanups: (() => Promise<void>)[] = [];
-    if (args.backendNodeIds && args.backendNodeIds.length > 0) {
-      for (const id of args.backendNodeIds) {
-        try {
-          const frame = await findFrameForBackendNodeId(page, id);
-          const handle = await (frame as any).mainRealm().adoptBackendNode(id);
-          if (handle) {
-            const originalStyle = await handle.evaluate((el: any, nodeId: number) => {
-              const prevOutline = el.style.outline;
-              const prevOutlineOffset = el.style.outlineOffset;
-              
-              el.style.setProperty('outline', '3px solid #ff3b30', 'important');
-              el.style.setProperty('outline-offset', '2px', 'important');
-
-              // Create floating label badge above the element
-              const badge = document.createElement('div');
-              badge.id = `mcp-highlight-label-${nodeId}`;
-              badge.textContent = `ID: ${nodeId}`;
-              badge.style.cssText = `
-                position: absolute;
-                background: #ff3b30;
-                color: white;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                font-size: 11px;
-                font-weight: bold;
-                padding: 2px 6px;
-                border-radius: 4px;
-                z-index: 2147483647;
-                pointer-events: none;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-                white-space: nowrap;
-              `;
-
-              const rect = el.getBoundingClientRect();
-              badge.style.top = `${window.scrollY + rect.top - 20}px`;
-              badge.style.left = `${window.scrollX + rect.left}px`;
-              document.body.appendChild(badge);
-
-              return { prevOutline, prevOutlineOffset, badgeId: badge.id };
-            }, id);
-
-            cleanups.push(async () => {
-              await handle.evaluate((el: any, orig: any) => {
-                el.style.outline = orig.prevOutline;
-                el.style.outlineOffset = orig.prevOutlineOffset;
-                const badge = document.getElementById(orig.badgeId);
-                if (badge) badge.remove();
-              }, originalStyle).catch(() => {});
-              await handle.dispose().catch(() => {});
-            });
-          }
-        } catch (err) {
-          console.error(`Failed to highlight node ${id} for overlay screenshot:`, err);
-        }
-      }
-    }
-
-    try {
-      buffer = (await page.screenshot({
-        encoding: 'base64',
-        type: format,
-        quality: format === 'jpeg' ? quality : undefined,
-        fullPage: args.fullPage ?? false,
-      })) as string;
-    } finally {
-      for (const cleanup of cleanups) {
-        await cleanup().catch(() => {});
-      }
-    }
-
-    const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
-
-    if (args.savePath) {
-      const resolvedPath = resolveSafePath(args.savePath);
-      const { mkdir, writeFile } = await import('fs/promises');
-      await mkdir(path.dirname(resolvedPath), { recursive: true }).catch(() => {});
-      await writeFile(resolvedPath, Buffer.from(buffer, 'base64'));
-      return {
-        content: [
-          { type: 'text' as const, text: `Highlighted screenshot saved to ${resolvedPath}` },
-          { type: 'image' as const, data: buffer, mimeType },
-        ],
-      };
-    }
-
-    return {
-      content: [{ type: 'image' as const, data: buffer, mimeType }],
-    };
-  }
-);
 
 server.registerTool(
   'browser_start_recording',
