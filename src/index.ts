@@ -97,11 +97,43 @@ function requireTelemetry(): SessionTelemetryManager {
   return telemetry;
 }
 
+async function rebuildAndCheckpointIndex(): Promise<void> {
+  const { page, cdp } = requireSession();
+  nodeIndex.clear();
+  try {
+    const frames = page.frames();
+    await Promise.all(
+      frames.map(async (frame) => {
+        const isMainFrame = frame === page.mainFrame();
+        try {
+          const params: Record<string, unknown> = {};
+          if (!isMainFrame) {
+            const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+            if (frameId && typeof frameId === 'string') {
+              params.frameId = frameId;
+            } else {
+              return;
+            }
+          }
+          const result = await cdp.send('Accessibility.getFullAXTree', params);
+          nodeIndex.buildFromAXNodes(result.nodes as any[]);
+        } catch {
+          // Skip inaccessible frames
+        }
+      }),
+    );
+  } catch {
+    // Best effort
+  }
+  nodeIndex.checkpoint();
+}
+
 async function logStepToHistory(
   actionName: string,
   actionDetails: string,
   feedback: string,
   startTime: number,
+  navOccurred: boolean = false,
 ): Promise<void> {
   if (!autoTrackHistory || !sessionHistoryDir) return;
 
@@ -123,8 +155,8 @@ async function logStepToHistory(
 
   // 2. Compute DOM Delta
   let domDeltaMarkdown = '';
-  if (actionName === 'navigate') {
-    domDeltaMarkdown = `Page transition to ${actionDetails} occurred. Node index has been reset and a new baseline checkpointed.`;
+  if (actionName === 'navigate' || navOccurred) {
+    domDeltaMarkdown = `Page transition to ${page.url()} occurred. Node index has been reset and a new baseline checkpointed.`;
   } else {
     try {
       const frames = page.frames();
@@ -426,32 +458,7 @@ server.registerTool(
     tel.addNavigation(url);
 
     // Reset nodeIndex and capture new baseline checkpoint
-    nodeIndex.clear();
-    const { page, cdp } = requireSession();
-    try {
-      const frames = page.frames();
-      for (const frame of frames) {
-        const isMainFrame = frame === page.mainFrame();
-        try {
-          const params: Record<string, unknown> = {};
-          if (!isMainFrame) {
-            const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
-            if (frameId && typeof frameId === 'string') {
-              params.frameId = frameId;
-            } else {
-              continue;
-            }
-          }
-          const result = await cdp.send('Accessibility.getFullAXTree', params);
-          nodeIndex.buildFromAXNodes(result.nodes as any[]);
-        } catch {
-          // Skip inaccessible frames
-        }
-      }
-    } catch {
-      // Best effort
-    }
-    nodeIndex.checkpoint(); // Checkpoint for delta tracking of subsequent actions
+    await rebuildAndCheckpointIndex();
 
     let feedback = result;
 
@@ -632,6 +639,12 @@ server.registerTool(
   }) => {
     const { page, cdp } = requireSession();
     const tel = requireTelemetry();
+
+    const urlBefore = page.url();
+    let navPromise: Promise<unknown> | null = null;
+    if (action === 'click') {
+      navPromise = page.waitForNavigation({ waitUntil: 'load', timeout: 1000 }).catch(() => null);
+    }
 
     // Take checkpoint before action for delta tracking
     nodeIndex.checkpoint();
@@ -870,6 +883,16 @@ server.registerTool(
       }
     }
 
+    if (navPromise) {
+      await navPromise;
+    }
+    const urlAfter = page.url();
+    const navOccurred = urlBefore !== urlAfter;
+
+    if (navOccurred) {
+      await rebuildAndCheckpointIndex();
+    }
+
     let feedback = result?.feedback || 'Action completed.';
 
     const finalSettleTime = settleTimeMs !== undefined ? settleTimeMs : 250;
@@ -884,38 +907,43 @@ server.registerTool(
           : coordinate
             ? `coord: [${coordinate.join(',')}]`
             : '';
-      await logStepToHistory(action, details, feedback, startTime);
+      await logStepToHistory(action, details, feedback, startTime, navOccurred);
     }
 
     if (returnDelta) {
       // Compute DOM Delta
       let domDeltaMarkdown = '';
-      try {
-        const frames = page.frames();
-        await Promise.all(
-          frames.map(async (frame) => {
-            const isMainFrame = frame === page.mainFrame();
-            try {
-              const params: Record<string, unknown> = {};
-              if (!isMainFrame) {
-                const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
-                if (frameId && typeof frameId === 'string') {
-                  params.frameId = frameId;
-                } else {
-                  return;
+      if (navOccurred) {
+        domDeltaMarkdown = `Page transition to ${urlAfter} occurred. Node index has been reset and a new baseline checkpointed.`;
+      } else {
+        try {
+          const frames = page.frames();
+          await Promise.all(
+            frames.map(async (frame) => {
+              const isMainFrame = frame === page.mainFrame();
+              try {
+                const params: Record<string, unknown> = {};
+                if (!isMainFrame) {
+                  const frameId =
+                    (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+                  if (frameId && typeof frameId === 'string') {
+                    params.frameId = frameId;
+                  } else {
+                    return;
+                  }
                 }
+                const result = await cdp.send('Accessibility.getFullAXTree', params);
+                nodeIndex.buildFromAXNodes(result.nodes as any[]);
+              } catch {
+                // Skip inaccessible frames
               }
-              const result = await cdp.send('Accessibility.getFullAXTree', params);
-              nodeIndex.buildFromAXNodes(result.nodes as any[]);
-            } catch {
-              // Skip inaccessible frames
-            }
-          }),
-        );
-        const deltaResult = await getStateDelta(page, cdp, nodeIndex);
-        domDeltaMarkdown = deltaResult.text;
-      } catch (err) {
-        domDeltaMarkdown = `Error computing DOM delta: ${err instanceof Error ? err.message : String(err)}`;
+            }),
+          );
+          const deltaResult = await getStateDelta(page, cdp, nodeIndex);
+          domDeltaMarkdown = deltaResult.text;
+        } catch (err) {
+          domDeltaMarkdown = `Error computing DOM delta: ${err instanceof Error ? err.message : String(err)}`;
+        }
       }
 
       // Filter network/console

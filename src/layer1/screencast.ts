@@ -7,7 +7,7 @@ import type { CDPSession } from 'puppeteer-core';
 import type { WorkerBridge } from '../workers/workerBridge.js';
 import ffmpegPath from 'ffmpeg-static';
 import { execFileSync } from 'child_process';
-import { writeFileSync, mkdirSync } from 'fs';
+import { writeFileSync, mkdirSync, unlinkSync, existsSync } from 'fs';
 import { join, resolve, isAbsolute } from 'path';
 import os from 'os';
 
@@ -197,6 +197,18 @@ export class ScreencastManager {
           { timeout: 30_000 },
         );
         videoPath = videoOutputPath;
+        // Clean up temporary frame files to save disk space
+        for (let i = 0; i < frames.length; i++) {
+          try {
+            const filename = `frame_${String(i).padStart(5, '0')}.jpg`;
+            const filePath = join(outputDir, filename);
+            if (existsSync(filePath)) {
+              unlinkSync(filePath);
+            }
+          } catch {
+            // ignore
+          }
+        }
       } catch (err) {
         console.error('ffmpeg assembly failed:', err);
       }
