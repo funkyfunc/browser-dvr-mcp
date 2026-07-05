@@ -242,7 +242,7 @@ export async function resolveElementCenter(
 
   while (true) {
     try {
-      const result = (await cdpSession.send('DOM.getBoxModel', {
+      let result = (await cdpSession.send('DOM.getBoxModel', {
         backendNodeId,
       })) as { model: { content: number[] } };
 
@@ -269,12 +269,44 @@ export async function resolveElementCenter(
         centerY += offset.y;
       }
 
-      // Clamp to viewport
+      // Check if the center coordinates lie outside the main window viewport
       const viewport = await page.evaluate(() => ({
         width: window.innerWidth,
         height: window.innerHeight,
       }));
 
+      const isOffscreen =
+        centerX < 0 || centerX > viewport.width || centerY < 0 || centerY > viewport.height;
+
+      if (isOffscreen) {
+        try {
+          // Native CDP scroll into view
+          await cdpSession.send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
+
+          // Re-fetch box model after scroll
+          result = (await cdpSession.send('DOM.getBoxModel', {
+            backendNodeId,
+          })) as { model: { content: number[] } };
+
+          const q2 = result.model.content;
+          const x2 = Math.min(q2[0], q2[2], q2[4], q2[6]);
+          const y2 = Math.min(q2[1], q2[3], q2[5], q2[7]);
+          const w2 = Math.max(q2[0], q2[2], q2[4], q2[6]) - x2;
+          const h2 = Math.max(q2[1], q2[3], q2[5], q2[7]) - y2;
+
+          centerX = x2 + w2 / 2;
+          centerY = y2 + h2 / 2;
+          if (isSubframeSession) {
+            const offset = await getFrameOffset(frame);
+            centerX += offset.x;
+            centerY += offset.y;
+          }
+        } catch {
+          // Ignore scroll failures and fallback
+        }
+      }
+
+      // Clamp to viewport edges as safety fallback
       const clampedX = Math.max(0, Math.min(centerX, viewport.width));
       const clampedY = Math.max(0, Math.min(centerY, viewport.height));
 
