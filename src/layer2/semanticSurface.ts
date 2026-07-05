@@ -323,24 +323,36 @@ export async function getSemanticSurface(
   let combinedMarkdown = '';
   const errors: string[] = [];
 
-  for (const frame of frames) {
-    const isMainFrame = frame === page.mainFrame();
+  // Fetch accessibility trees for all frames concurrently
+  const results = await Promise.all(
+    frames.map(async (frame) => {
+      const isMainFrame = frame === page.mainFrame();
+      try {
+        const params: Record<string, unknown> = {};
+        if (!isMainFrame) {
+          const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+          if (frameId && typeof frameId === 'string') {
+            params.frameId = frameId;
+          } else {
+            return null;
+          }
+        }
+        const result = await cdpSession.send('Accessibility.getFullAXTree', params);
+        return { frame, isMainFrame, result };
+      } catch (err: any) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`Frame ${isMainFrame ? '(main)' : frame.url()}: ${msg}`);
+        return null;
+      }
+    }),
+  );
+
+  // Process and serialize them sequentially to preserve order
+  for (const item of results) {
+    if (!item) continue;
+    const { frame, isMainFrame, result } = item;
 
     try {
-      // For the main frame, omit frameId — CDP defaults to the main frame's tree.
-      // For child frames, attempt to extract the CDP frameId from Puppeteer internals.
-      const params: Record<string, unknown> = {};
-      if (!isMainFrame) {
-        const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
-        if (frameId && typeof frameId === 'string') {
-          params.frameId = frameId;
-        } else {
-          // Cannot resolve frame ID — skip this child frame
-          continue;
-        }
-      }
-
-      const result = await cdpSession.send('Accessibility.getFullAXTree', params);
       const nodes = result.nodes as AXNodeInput[];
 
       if (!nodes || nodes.length === 0) {
@@ -385,7 +397,6 @@ export async function getSemanticSurface(
         frameCount++;
       }
     } catch (err) {
-      // Log the error instead of silently swallowing — aids debugging
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`Frame ${isMainFrame ? '(main)' : frame.url()}: ${msg}`);
     }

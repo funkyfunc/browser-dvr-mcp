@@ -128,24 +128,26 @@ async function logStepToHistory(
   } else {
     try {
       const frames = page.frames();
-      for (const frame of frames) {
-        const isMainFrame = frame === page.mainFrame();
-        try {
-          const params: Record<string, unknown> = {};
-          if (!isMainFrame) {
-            const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
-            if (frameId && typeof frameId === 'string') {
-              params.frameId = frameId;
-            } else {
-              continue;
+      await Promise.all(
+        frames.map(async (frame) => {
+          const isMainFrame = frame === page.mainFrame();
+          try {
+            const params: Record<string, unknown> = {};
+            if (!isMainFrame) {
+              const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+              if (frameId && typeof frameId === 'string') {
+                params.frameId = frameId;
+              } else {
+                return;
+              }
             }
+            const result = await cdp.send('Accessibility.getFullAXTree', params);
+            nodeIndex.buildFromAXNodes(result.nodes as any[]);
+          } catch {
+            // Skip inaccessible frames
           }
-          const result = await cdp.send('Accessibility.getFullAXTree', params);
-          nodeIndex.buildFromAXNodes(result.nodes as any[]);
-        } catch {
-          // Skip inaccessible frames
-        }
-      }
+        }),
+      );
       const deltaResult = await getStateDelta(page, cdp, nodeIndex);
       domDeltaMarkdown = deltaResult.text;
     } catch (err) {
@@ -890,24 +892,26 @@ server.registerTool(
       let domDeltaMarkdown = '';
       try {
         const frames = page.frames();
-        for (const frame of frames) {
-          const isMainFrame = frame === page.mainFrame();
-          try {
-            const params: Record<string, unknown> = {};
-            if (!isMainFrame) {
-              const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
-              if (frameId && typeof frameId === 'string') {
-                params.frameId = frameId;
-              } else {
-                continue;
+        await Promise.all(
+          frames.map(async (frame) => {
+            const isMainFrame = frame === page.mainFrame();
+            try {
+              const params: Record<string, unknown> = {};
+              if (!isMainFrame) {
+                const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+                if (frameId && typeof frameId === 'string') {
+                  params.frameId = frameId;
+                } else {
+                  return;
+                }
               }
+              const result = await cdp.send('Accessibility.getFullAXTree', params);
+              nodeIndex.buildFromAXNodes(result.nodes as any[]);
+            } catch {
+              // Skip inaccessible frames
             }
-            const result = await cdp.send('Accessibility.getFullAXTree', params);
-            nodeIndex.buildFromAXNodes(result.nodes as any[]);
-          } catch {
-            // Skip inaccessible frames
-          }
-        }
+          }),
+        );
         const deltaResult = await getStateDelta(page, cdp, nodeIndex);
         domDeltaMarkdown = deltaResult.text;
       } catch (err) {

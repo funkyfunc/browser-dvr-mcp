@@ -338,7 +338,13 @@ export async function resolveAndValidateSpatialCoordinate(
     }
 
     if (Date.now() - startTime >= timeoutMs) {
-      return { valid: false, error: lastError };
+      const enhancedError =
+        lastError.includes('Spatial validation failed') ||
+        lastError.includes('Protocol error') ||
+        lastError.includes('No node found')
+          ? `${lastError}. Tip: Try scrolling the element into view first, specifying a coordinate 'offset', or setting 'force: true' to bypass occlusion checks.`
+          : lastError;
+      return { valid: false, error: enhancedError };
     }
 
     await new Promise((r) => setTimeout(r, 100));

@@ -27,24 +27,26 @@ export async function getStateDelta(
 }> {
   // Refresh the node index with the current AX tree state
   const frames = page.frames();
-  for (const frame of frames) {
-    const isMainFrame = frame === page.mainFrame();
-    try {
-      const params: Record<string, unknown> = {};
-      if (!isMainFrame) {
-        const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
-        if (frameId && typeof frameId === 'string') {
-          params.frameId = frameId;
-        } else {
-          continue;
+  await Promise.all(
+    frames.map(async (frame) => {
+      const isMainFrame = frame === page.mainFrame();
+      try {
+        const params: Record<string, unknown> = {};
+        if (!isMainFrame) {
+          const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+          if (frameId && typeof frameId === 'string') {
+            params.frameId = frameId;
+          } else {
+            return;
+          }
         }
+        const result = await cdpSession.send('Accessibility.getFullAXTree', params);
+        nodeIndex.buildFromAXNodes(result.nodes as any[]);
+      } catch {
+        // Skip inaccessible frames
       }
-      const result = await cdpSession.send('Accessibility.getFullAXTree', params);
-      nodeIndex.buildFromAXNodes(result.nodes as any[]);
-    } catch {
-      // Skip inaccessible frames
-    }
-  }
+    }),
+  );
 
   // Compute delta against last checkpoint
   const delta = nodeIndex.computeDelta();
