@@ -2709,7 +2709,7 @@ server.registerTool(
     },
   },
   async ({ x, y }) => {
-    const { cdp } = requireSession();
+    const { page, cdp } = requireSession();
 
     try {
       const nodeResult = (await cdp.send('DOM.getNodeForLocation', {
@@ -2718,14 +2718,17 @@ server.registerTool(
         includeUserAgentShadowDOM: false,
       })) as { backendNodeId: number; frameId?: string; nodeId?: number };
 
-      const { object } = (await cdp.send('DOM.resolveNode', {
+      const targetFrame = await findFrameForBackendNodeId(page, nodeResult.backendNodeId);
+      const targetCdp = (targetFrame as any).client || cdp;
+
+      const { object } = (await targetCdp.send('DOM.resolveNode', {
         backendNodeId: nodeResult.backendNodeId,
       })) as { object: { objectId?: string } };
 
       let details: any = { backendNodeId: nodeResult.backendNodeId };
 
       if (object?.objectId) {
-        const result = (await cdp.send('Runtime.callFunctionOn', {
+        const result = (await targetCdp.send('Runtime.callFunctionOn', {
           objectId: object.objectId,
           functionDeclaration: `function() {
             return {
@@ -2738,7 +2741,9 @@ server.registerTool(
           returnByValue: true,
         })) as { result: { value: unknown } };
         details = { ...details, ...(result.result.value as object) };
-        await cdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+        await targetCdp
+          .send('Runtime.releaseObject', { objectId: object.objectId })
+          .catch(() => {});
       }
 
       return { content: [{ type: 'text', text: JSON.stringify(details, null, 2) }] };

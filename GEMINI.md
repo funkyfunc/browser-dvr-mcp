@@ -35,3 +35,24 @@ To eliminate Virtual DOM element detachment and stale references, keep interacti
 Every feature addition or bug fix that affects element resolution or spatial mapping must be verified against the **Adversarial Web Agent Testbed** suite. Ensure you:
 1. Extend `tests/fixtures/adversarial_testbed.html` with relevant layout wrappers (e.g. scaled containers, nested iframes) if introducing new coordinate/structural capabilities.
 2. Add end-to-end regression tests to `tests/developer-feedback-fixes.test.ts` to assert correct behavior.
+
+---
+
+## **5. Mandatory Interactive Testing with `run-mcp`**
+
+Whenever changes are made to the MCP server, you must verify the new server version interactively using the `run-mcp` REPL.
+
+* **The Rule:** Before finalizing any task, run the REPL testing script(s) or execute target tool commands via `npx run-mcp` to ensure the server connects and executes correctly in real-world scenarios.
+* **Example Test Commands:**
+  * Run the general navigation test script:
+    ```bash
+    npx run-mcp -s tests/test_script.txt -- node dist/index.js
+    ```
+  * Run the input controls test script:
+    ```bash
+    npx run-mcp -s tests/test_script_inputs.txt -- node dist/index.js
+    ```
+  * Run the element tree serialization test script:
+    ```bash
+    npx run-mcp -s tests/test_script_tree.txt -- node dist/index.js
+    ```

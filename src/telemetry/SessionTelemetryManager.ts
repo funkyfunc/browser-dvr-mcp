@@ -236,22 +236,31 @@ export class SessionTelemetryManager {
     }
     this.drainInterval = setInterval(async () => {
       try {
-        const result = await page.evaluate(() => {
-          const win = window as any;
-          const resMutations = win.__mcp_mutations || [];
-          win.__mcp_mutations = [];
-          const resCls = win.__mcp_cls || 0;
-          win.__mcp_cls = 0;
-          return { mutations: resMutations, cls: resCls };
-        });
-        if (result) {
-          for (const m of result.mutations) {
-            this.addMutation(m.type, m.targetId, m);
-          }
-          if (result.cls > 0) {
-            this.addLayoutShift(result.cls);
-          }
-        }
+        const frames = page.frames();
+        await Promise.all(
+          frames.map(async (frame) => {
+            try {
+              const result = await frame.evaluate(() => {
+                const win = window as any;
+                const resMutations = win.__mcp_mutations || [];
+                win.__mcp_mutations = [];
+                const resCls = win.__mcp_cls || 0;
+                win.__mcp_cls = 0;
+                return { mutations: resMutations, cls: resCls };
+              });
+              if (result) {
+                for (const m of result.mutations) {
+                  this.addMutation(m.type, m.targetId, m);
+                }
+                if (result.cls > 0) {
+                  this.addLayoutShift(result.cls);
+                }
+              }
+            } catch {
+              // Ignore frame-specific errors (e.g. cross-origin, context destroyed)
+            }
+          }),
+        );
       } catch {
         // Page might be closed or navigated
       }

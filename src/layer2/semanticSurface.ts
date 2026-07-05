@@ -49,8 +49,8 @@ async function sniffPrunedInteractiveElements(
   try {
     await cdpSession.send('DOM.enable');
 
-    // Mark candidate interactive elements in page JS context
-    await frame.evaluate(() => {
+    // 1. Mark and extract candidates in page context in one evaluation
+    const candidateDetails = (await frame.evaluate(() => {
       const candidates = Array.from(document.querySelectorAll('*')).filter((el) => {
         const rect = el.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return false;
@@ -101,49 +101,73 @@ async function sniffPrunedInteractiveElements(
         );
       });
 
-      candidates.forEach((el, index) => {
+      return candidates.map((el, index) => {
         el.setAttribute('data-mcp-sniff', String(index));
+        const style = window.getComputedStyle(el);
+        const text = el.textContent ? el.textContent.trim().substring(0, 30) : '';
+        const className =
+          el.className && typeof el.className === 'string' ? el.className.trim() : '';
+        return {
+          tag: el.tagName.toLowerCase(),
+          id: el.id || '',
+          className,
+          cursor: style.cursor,
+          text,
+        };
       });
-      return candidates.length;
-    });
+    })) as { tag: string; id: string; className: string; cursor: string; text: string }[];
 
-    const handles = await frame.$$('[data-mcp-sniff]');
+    if (candidateDetails.length === 0) {
+      return prunedElements;
+    }
 
-    for (const handle of handles) {
-      try {
-        const { objectId } = handle.remoteObject();
-        if (!objectId) continue;
+    // 2. Fetch flattened document from CDP to resolve backendNodeIds in batch
+    const { nodes } = (await cdpSession.send('DOM.getFlattenedDocument', {
+      pierce: false,
+    })) as { nodes: { nodeId: number; backendNodeId: number; attributes?: string[] }[] };
 
-        const { node } = (await cdpSession.send('DOM.describeNode', { objectId })) as any;
-        const backendNodeId = node.backendNodeId;
+    const getAttribute = (attributes: string[] | undefined, name: string): string | null => {
+      if (!attributes) return null;
+      for (let i = 0; i < attributes.length; i += 2) {
+        if (attributes[i] === name) {
+          return attributes[i + 1];
+        }
+      }
+      return null;
+    };
 
-        if (backendNodeId !== undefined && !renderedNodeIds.has(backendNodeId)) {
-          const details = await handle.evaluate((el: any) => {
-            const style = window.getComputedStyle(el);
-            const text = el.textContent ? el.textContent.trim().substring(0, 30) : '';
-            const className =
-              el.className && typeof el.className === 'string' ? el.className.trim() : '';
-            return {
-              tag: el.tagName.toLowerCase(),
-              id: el.id || '',
-              className,
-              cursor: style.cursor,
-              text,
-            };
-          });
-
+    // 3. Correlate nodes using the temporary attribute
+    for (const node of nodes) {
+      const sniffIndexStr = getAttribute(node.attributes, 'data-mcp-sniff');
+      if (sniffIndexStr !== null) {
+        const index = parseInt(sniffIndexStr, 10);
+        const details = candidateDetails[index];
+        if (
+          details &&
+          node.backendNodeId !== undefined &&
+          !renderedNodeIds.has(node.backendNodeId)
+        ) {
           prunedElements.push({
-            backendNodeId,
-            ...details,
+            backendNodeId: node.backendNodeId,
+            tag: details.tag,
+            id: details.id,
+            className: details.className,
+            cursor: details.cursor,
+            text: details.text,
           });
         }
-        await handle.evaluate((el: any) => el.removeAttribute('data-mcp-sniff'));
-      } catch (err: any) {
-        // Safe fallback
-      } finally {
-        await handle.dispose();
       }
     }
+
+    // 4. Cleanup the temporary attribute
+    await frame
+      .evaluate(() => {
+        const elements = Array.from(document.querySelectorAll('[data-mcp-sniff]'));
+        for (const el of elements) {
+          el.removeAttribute('data-mcp-sniff');
+        }
+      })
+      .catch(() => {});
   } catch (err: any) {
     // Safe fallback
   }

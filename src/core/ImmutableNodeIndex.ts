@@ -44,6 +44,7 @@ export class ImmutableNodeIndex {
    */
   buildFromAXNodes(nodes: AXNodeRaw[]): void {
     const currentBackendIds = new Set<number>();
+    const nodeLookup = new Map<string, AXNodeRaw>(nodes.map((n) => [n.nodeId, n]));
 
     for (const node of nodes) {
       if (node.ignored || !node.backendDOMNodeId) continue;
@@ -64,7 +65,7 @@ export class ImmutableNodeIndex {
       const childStableIds: number[] = [];
       if (node.childIds) {
         for (const childNodeId of node.childIds) {
-          const childNode = nodes.find((n) => n.nodeId === childNodeId);
+          const childNode = nodeLookup.get(childNodeId);
           if (childNode?.backendDOMNodeId && this.nodeMap.has(childNode.backendDOMNodeId)) {
             childStableIds.push(this.nodeMap.get(childNode.backendDOMNodeId)!);
           }
