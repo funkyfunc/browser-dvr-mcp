@@ -92,6 +92,78 @@ describe('Unified Delta & Visual Auto-History Logging', () => {
     expect(historyContent).toContain('### Visual State');
   });
 
+  it('should support browser_dump_dvr to dump frames', async () => {
+    // Wait briefly to allow screencast to capture at least one frame
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const dumpHandler = (server as any)._registeredTools['browser_dump_dvr'].handler;
+    const testDumpDir = join(process.cwd(), 'tests_dvr_dump_run');
+    if (existsSync(testDumpDir)) {
+      rmSync(testDumpDir, { recursive: true, force: true });
+    }
+
+    const dumpResult = await dumpHandler({ outputPath: testDumpDir });
+    expect(dumpResult.content[0].text).toContain('Successfully dumped');
+    expect(existsSync(testDumpDir)).toBe(true);
+
+    const files = readdirSync(testDumpDir);
+    expect(files.some((f) => f.startsWith('frame_') && f.endsWith('.jpg'))).toBe(true);
+
+    // Clean up
+    rmSync(testDumpDir, { recursive: true, force: true });
+  });
+
+  it('should generate crash diagnostics on tool failure', async () => {
+    const interactHandler = (server as any)._registeredTools['atomic_interact'].handler;
+    let threw = false;
+    let savedCrashDir = '';
+
+    try {
+      await interactHandler({
+        action: 'scroll',
+      });
+    } catch (err: any) {
+      threw = true;
+      expect(err.message).toContain('Crash diagnostics saved to:');
+      const match = err.message.match(/Crash diagnostics saved to:\s*(.*)\)/);
+      if (match) {
+        savedCrashDir = match[1].trim();
+      }
+    }
+
+    expect(threw).toBe(true);
+    expect(savedCrashDir).not.toBe('');
+    expect(existsSync(savedCrashDir)).toBe(true);
+
+    const files = readdirSync(savedCrashDir);
+    expect(files).toContain('crash_screenshot.png');
+    expect(files).toContain('crash_report.md');
+    expect(files.some((f) => f.startsWith('frame_') && f.endsWith('.jpg'))).toBe(true);
+
+    const reportContent = readFileSync(join(savedCrashDir, 'crash_report.md'), 'utf-8');
+    expect(reportContent).toContain('# Browser MCP Crash Report - atomic_interact');
+    expect(reportContent).toContain('Failed Tool:** `atomic_interact`');
+
+    // Clean up
+    rmSync(savedCrashDir, { recursive: true, force: true });
+
+    // Also clean up parent crash_dumps if empty
+    const crashDumpsParent = join(process.cwd(), 'crash_dumps');
+    if (existsSync(crashDumpsParent) && readdirSync(crashDumpsParent).length === 0) {
+      rmSync(crashDumpsParent, { recursive: true, force: true });
+    }
+  });
+
+  it('should include detachedDOMNodes in session summary', async () => {
+    const summaryHandler = (server as any)._registeredTools['get_session_summary'].handler;
+    const summaryResult = await summaryHandler({});
+    const summary = JSON.parse(summaryResult.content[0].text);
+
+    expect(summary).toHaveProperty('detachedDOMNodes');
+    expect(typeof summary.detachedDOMNodes).toBe('number');
+    expect(summary.detachedDOMNodes).toBeGreaterThanOrEqual(0);
+  });
+
   it('should finalize recording and reset variables on browser_close', async () => {
     const closeHandler = (server as any)._registeredTools['browser_close'].handler;
     const closeResult = await closeHandler({});

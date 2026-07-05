@@ -103,6 +103,10 @@ export class ImmutableNodeIndex {
     return new Map(this.snapshotMap);
   }
 
+  getPreviousSnapshots(): Map<number, NodeSnapshot> | null {
+    return this.previousSnapshot ? new Map(this.previousSnapshot) : null;
+  }
+
   get size(): number {
     return this.nodeMap.size;
   }

@@ -8,140 +8,10 @@
 // and blocking the JSON-RPC transport.
 
 import { parentPort } from 'worker_threads';
+import { mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
 
-// ─── AX Tree Serialization ──────────────────────────────────────────────────
-
-interface AXNodeInput {
-  nodeId: string;
-  ignored: boolean;
-  role?: { value: string };
-  name?: { value: string };
-  description?: { value: string };
-  value?: { value: unknown };
-  childIds?: string[];
-  backendDOMNodeId?: number;
-  properties?: { name: string; value: { type: string; value: unknown } }[];
-}
-
-interface TreeNode {
-  node: AXNodeInput;
-  children: TreeNode[];
-}
-
-function serializeAXTreeToMarkdown(nodes: AXNodeInput[], semanticOnly: boolean): string {
-  if (!nodes || nodes.length === 0) return '*(Empty accessibility tree)*';
-
-  // Build tree structure
-  const nodeMap = new Map<string, TreeNode>();
-  for (const node of nodes) {
-    nodeMap.set(node.nodeId, { node, children: [] });
-  }
-
-  const childSet = new Set<string>();
-  for (const tNode of nodeMap.values()) {
-    const childIds = tNode.node.childIds || [];
-    for (const childId of childIds) {
-      const child = nodeMap.get(childId);
-      if (child) {
-        tNode.children.push(child);
-        childSet.add(childId);
-      }
-    }
-  }
-
-  // Find roots (nodes that are not children of any other node)
-  const roots: TreeNode[] = [];
-  for (const tNode of nodeMap.values()) {
-    if (!childSet.has(tNode.node.nodeId)) {
-      roots.push(tNode);
-    }
-  }
-
-  let markdown = '';
-
-  function renderNode(tNode: TreeNode, depth: number): void {
-    const { node, children } = tNode;
-
-    if (node.ignored) {
-      for (const child of children) renderNode(child, depth);
-      return;
-    }
-
-    const role = node.role?.value || 'generic';
-    const hasContent =
-      node.name?.value ||
-      node.description?.value ||
-      node.value?.value !== undefined ||
-      [
-        'button',
-        'link',
-        'textbox',
-        'checkbox',
-        'heading',
-        'menuitem',
-        'tab',
-        'combobox',
-        'listbox',
-        'radio',
-        'switch',
-        'slider',
-        'progressbar',
-        'img',
-        'alert',
-      ].includes(role);
-
-    let renderThis = hasContent;
-
-    // Keep structural containers that have interactive children
-    if (!renderThis && children.length > 0) renderThis = true;
-
-    // Aggressively prune deeply nested generic pass-through nodes
-    if (role === 'generic' && !hasContent && children.length === 1) renderThis = false;
-
-    if (semanticOnly && role === 'generic' && !hasContent) renderThis = false;
-
-    const indent = '  '.repeat(depth);
-
-    if (renderThis) {
-      let nodeStr = `${indent}- [${role}]`;
-
-      if (node.name?.value) nodeStr += ` "${node.name.value}"`;
-      if (node.value?.value !== undefined) nodeStr += ` (value: "${node.value.value}")`;
-      if (node.description?.value) nodeStr += ` — *${node.description.value}*`;
-
-      // Properties
-      const props: string[] = [];
-      if (node.properties) {
-        for (const prop of node.properties) {
-          if (prop.name === 'level') props.push(`L${prop.value.value}`);
-          else if (prop.name === 'checked' && prop.value.value) props.push('checked');
-          else if (prop.name === 'disabled' && prop.value.value) props.push('disabled');
-          else if (prop.name === 'focused' && prop.value.value) props.push('focused');
-          else if (prop.name === 'required' && prop.value.value) props.push('required');
-          else if (prop.name === 'expanded')
-            props.push(prop.value.value ? 'expanded' : 'collapsed');
-          else if (prop.name === 'selected' && prop.value.value) props.push('selected');
-        }
-      }
-
-      // Stable backend node ID for interaction targeting
-      if (node.backendDOMNodeId !== undefined) {
-        props.push(`id: ${node.backendDOMNodeId}`);
-      }
-
-      if (props.length > 0) nodeStr += ` [${props.join(', ')}]`;
-
-      markdown += nodeStr + '\n';
-      for (const child of children) renderNode(child, depth + 1);
-    } else {
-      for (const child of children) renderNode(child, depth);
-    }
-  }
-
-  for (const root of roots) renderNode(root, 0);
-
-  return markdown.trim();
-}
+import { serializeAXTreeToMarkdown } from '../core/treeSerializer.js';
 
 // ─── State Delta Computation ────────────────────────────────────────────────
 
@@ -150,6 +20,8 @@ interface SnapshotNode {
   backendNodeId: number;
   role: string;
   name: string;
+  value?: string;
+  properties?: { name: string; value: unknown }[];
   childIds: number[];
 }
 
@@ -173,6 +45,10 @@ function computeStateDelta(
     const changes: Record<string, { previous: unknown; current: unknown }> = {};
     if (prev.role !== curr.role) changes['role'] = { previous: prev.role, current: curr.role };
     if (prev.name !== curr.name) changes['name'] = { previous: prev.name, current: curr.name };
+    if (prev.value !== curr.value) changes['value'] = { previous: prev.value, current: curr.value };
+    if (JSON.stringify(prev.properties) !== JSON.stringify(curr.properties)) {
+      changes['properties'] = { previous: prev.properties, current: curr.properties };
+    }
     if (JSON.stringify(prev.childIds) !== JSON.stringify(curr.childIds)) {
       changes['children'] = { previous: prev.childIds, current: curr.childIds };
     }
@@ -188,18 +64,52 @@ function computeStateDelta(
   return { added, removed, modified, timestamp: Date.now() };
 }
 
-// ─── DVR Frame Buffering ────────────────────────────────────────────────────
+class RingBuffer<T> {
+  private buffer: T[];
+  private head = 0;
+  private count = 0;
+
+  constructor(private readonly capacity: number) {
+    this.buffer = new Array<T>(capacity);
+  }
+
+  push(item: T): void {
+    this.buffer[this.head] = item;
+    this.head = (this.head + 1) % this.capacity;
+    if (this.count < this.capacity) this.count++;
+  }
+
+  toArray(): T[] {
+    if (this.count < this.capacity) {
+      return this.buffer.slice(0, this.count);
+    }
+    return [...this.buffer.slice(this.head), ...this.buffer.slice(0, this.head)];
+  }
+
+  clear(): void {
+    this.head = 0;
+    this.count = 0;
+  }
+
+  get size(): number {
+    return this.count;
+  }
+}
 
 interface Frame {
   data: string;
   timestamp: number;
 }
 
-let frames: Frame[] = [];
+const frames = new RingBuffer<Frame>(150); // Cap at 150 frames max (~15 seconds at 10 FPS)
 
 setInterval(() => {
   const cutoff = Date.now() - 10000; // 10-second rolling window
-  frames = frames.filter((f) => f.timestamp >= cutoff);
+  const active = frames.toArray().filter((f) => f.timestamp >= cutoff);
+  frames.clear();
+  for (const f of active) {
+    frames.push(f);
+  }
 }, 1000);
 
 // ─── Message Handler ────────────────────────────────────────────────────────
@@ -207,11 +117,18 @@ setInterval(() => {
 if (parentPort) {
   parentPort.on('message', (message) => {
     if (message.type === 'serializeAXTree') {
-      const markdown = serializeAXTreeToMarkdown(message.nodes, message.semanticOnly);
+      const renderedNodeIds: number[] = [];
+      const markdown = serializeAXTreeToMarkdown(
+        message.nodes,
+        message.semanticOnly,
+        message.targetBackendNodeId,
+        renderedNodeIds,
+      );
       parentPort!.postMessage({
         type: 'serializeAXTree',
         id: message.id,
         markdown,
+        renderedNodeIds,
       });
     } else if (message.type === 'computeStateDelta') {
       const delta = computeStateDelta(message.previous, message.current);
@@ -223,28 +140,29 @@ if (parentPort) {
     } else if (message.type === 'frame') {
       frames.push({ data: message.data, timestamp: message.timestamp || Date.now() });
     } else if (message.type === 'clear') {
-      frames = [];
+      frames.clear();
     } else if (message.type === 'dump') {
       // Minimal frame dump — legacy support
-      const { outputPath } = message;
+      const { outputPath, id } = message;
       try {
-        const { mkdirSync, writeFileSync } = require('fs');
-        const { join } = require('path');
         mkdirSync(outputPath, { recursive: true });
-        frames.forEach((frame, idx) => {
+        const allFrames = frames.toArray();
+        allFrames.forEach((frame, idx) => {
           const filename = `frame_${String(idx).padStart(4, '0')}_${frame.timestamp}.jpg`;
           writeFileSync(join(outputPath, filename), Buffer.from(frame.data, 'base64'));
         });
         parentPort!.postMessage({
           type: 'dump_complete',
+          id,
           success: true,
-          frameCount: frames.length,
+          frameCount: allFrames.length,
           logCount: 0,
           outputPath,
         });
       } catch (err: unknown) {
         parentPort!.postMessage({
           type: 'dump_complete',
+          id,
           success: false,
           error: err instanceof Error ? err.message : String(err),
         });

@@ -350,4 +350,249 @@ describe('Developer Feedback Fixes Regression Tests', () => {
 
     await browser.close();
   });
+
+  it('should screenshot cross-iframe elements without crashing (Bug 1)', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+    });
+    const page = await browser.newPage();
+
+    await page.setContent(`
+      <body style="margin: 0; padding: 0;">
+        <div style="height: 50px;">Main Content</div>
+        <iframe id="frame1" style="width: 300px; height: 300px; margin-top: 20px; margin-left: 30px; border: none;" srcdoc="
+          <body style='margin: 0;'>
+            <h1 id='iframe-heading' style='margin: 10px;'>Iframe Heading</h1>
+          </body>
+        "></iframe>
+      </body>
+    `);
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const cdp = await page.createCDPSession();
+    await cdp.send('DOM.enable');
+
+    // Find the iframe heading's backendNodeId
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
+    let headingBackendNodeId: number | null = null;
+    const findHeading = (node: any) => {
+      if (node.nodeName === 'H1' && node.attributes && node.attributes.includes('iframe-heading')) {
+        headingBackendNodeId = node.backendNodeId;
+        return;
+      }
+      if (node.children) {
+        for (const c of node.children) findHeading(c);
+      }
+      if (node.contentDocument) findHeading(node.contentDocument);
+    };
+    findHeading(doc.root);
+    expect(headingBackendNodeId).not.toBeNull();
+
+    // Use findFrameForBackendNodeId to get the correct frame
+    const frame = await findFrameForBackendNodeId(page, headingBackendNodeId!);
+    expect(frame).not.toBe(page.mainFrame());
+
+    // Resolve via CDP (same pattern as the fixed browser_screenshot)
+    const targetCdp = (frame as any).client;
+    await targetCdp.send('DOM.enable');
+    const { object } = (await targetCdp.send('DOM.resolveNode', {
+      backendNodeId: headingBackendNodeId,
+    })) as { object: { objectId?: string } };
+    expect(object?.objectId).toBeDefined();
+
+    // This should NOT throw "getBoundingClientRect is not a function"
+    const evalResult = (await targetCdp.send('Runtime.callFunctionOn', {
+      objectId: object.objectId,
+      functionDeclaration: `function() {
+        const r = this.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      }`,
+      returnByValue: true,
+    })) as { result: { value: { x: number; y: number; width: number; height: number } } };
+    const rect = evalResult.result.value;
+    expect(rect.width).toBeGreaterThan(0);
+    expect(rect.height).toBeGreaterThan(0);
+
+    // Verify frame offset is added correctly
+    const offset = await getFrameOffset(frame);
+    expect(offset.x).toBeCloseTo(30, 0);
+    expect(offset.y).toBeCloseTo(70, 0); // 50px header + 20px margin
+
+    await targetCdp.send('Runtime.releaseObject', { objectId: object.objectId }).catch(() => {});
+    await browser.close();
+  });
+
+  it('should resolve backendNodeId > 0 for focused elements in tab flow (Bug 2)', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+    });
+    const page = await browser.newPage();
+
+    await page.setContent(`
+      <body>
+        <button id="btn1">Button 1</button>
+        <input id="input1" type="text" placeholder="Input 1" />
+        <a id="link1" href="#">Link 1</a>
+      </body>
+    `);
+    await new Promise((r) => setTimeout(r, 500));
+
+    const cdp = await page.createCDPSession();
+    await cdp.send('DOM.enable');
+
+    // Reset focus
+    await page.evaluate(() => {
+      (document.activeElement as HTMLElement)?.blur?.();
+      document.body.focus();
+    });
+
+    const results: { tag: string; backendNodeId: number }[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press('Tab');
+      await new Promise((r) => setTimeout(r, 50));
+
+      const info = await page.evaluate(() => {
+        const el = document.activeElement;
+        return { tag: el?.tagName?.toLowerCase() || 'unknown' };
+      });
+
+      // Use the fixed CDP Runtime.evaluate approach
+      let backendNodeId = 0;
+      try {
+        const evalResult = (await cdp.send('Runtime.evaluate', {
+          expression: 'document.activeElement',
+          returnByValue: false,
+        })) as { result: { objectId?: string } };
+        if (evalResult.result?.objectId) {
+          const { node } = await cdp.send('DOM.describeNode', {
+            objectId: evalResult.result.objectId,
+          });
+          backendNodeId = node.backendNodeId;
+          await cdp
+            .send('Runtime.releaseObject', { objectId: evalResult.result.objectId })
+            .catch(() => {});
+        }
+      } catch {
+        /* continue */
+      }
+
+      results.push({ tag: info.tag, backendNodeId });
+    }
+
+    // All 3 elements should have backendNodeId > 0
+    expect(results).toHaveLength(3);
+    expect(results[0].tag).toBe('button');
+    expect(results[0].backendNodeId).toBeGreaterThan(0);
+    expect(results[1].tag).toBe('input');
+    expect(results[1].backendNodeId).toBeGreaterThan(0);
+    expect(results[2].tag).toBe('a');
+    expect(results[2].backendNodeId).toBeGreaterThan(0);
+
+    await browser.close();
+  });
+
+  it('should assert element state for cross-iframe elements (Friction 2)', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+    });
+    const page = await browser.newPage();
+
+    await page.setContent(`
+      <body style="margin: 0;">
+        <iframe id="frame1" style="width: 300px; height: 300px; border: none;" srcdoc="
+          <body style='margin: 0;'>
+            <button id='iframe-btn' style='width: 100px; height: 40px;'>Click Me</button>
+          </body>
+        "></iframe>
+      </body>
+    `);
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const cdp = await page.createCDPSession();
+    await cdp.send('DOM.enable');
+
+    // Find button backendNodeId
+    const doc = (await cdp.send('DOM.getDocument', { depth: -1, pierce: true })) as any;
+    let btnBackendNodeId: number | null = null;
+    const findBtn = (node: any) => {
+      if (node.nodeName === 'BUTTON' && node.attributes && node.attributes.includes('iframe-btn')) {
+        btnBackendNodeId = node.backendNodeId;
+        return;
+      }
+      if (node.children) {
+        for (const c of node.children) findBtn(c);
+      }
+      if (node.contentDocument) findBtn(node.contentDocument);
+    };
+    findBtn(doc.root);
+    expect(btnBackendNodeId).not.toBeNull();
+
+    // Use findFrameForBackendNodeId (same as the fixed assert handler)
+    const frame = await findFrameForBackendNodeId(page, btnBackendNodeId!);
+    expect(frame).not.toBe(page.mainFrame());
+
+    const handle = await (frame as any).mainRealm().adoptBackendNode(btnBackendNodeId!);
+    expect(handle).not.toBeNull();
+
+    const result = await handle.evaluate((el: Element) => {
+      const htmlEl = el as HTMLElement;
+      const rect = el.getBoundingClientRect();
+      const visible =
+        rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+      const text = htmlEl.innerText || el.textContent || '';
+      return { visible, text: text.trim() };
+    });
+
+    expect(result.visible).toBe(true);
+    expect(result.text).toBe('Click Me');
+
+    await handle.dispose();
+    await browser.close();
+  });
+
+  it('should poll for element with timeoutMs in assert element (Feature)', async () => {
+    const browser = await puppeteer.launch({
+      executablePath: findChrome(),
+      headless: true,
+    });
+    const page = await browser.newPage();
+
+    await page.setContent(`
+      <body>
+        <div id="container"></div>
+        <script>
+          setTimeout(() => {
+            const toast = document.createElement('div');
+            toast.id = 'toast';
+            toast.textContent = 'Operation successful';
+            document.getElementById('container').appendChild(toast);
+          }, 300);
+        </script>
+      </body>
+    `);
+
+    // Immediately, the toast doesn't exist
+    const notFound = await page.$('#toast');
+    expect(notFound).toBeNull();
+
+    // Poll for the element (simulating timeoutMs logic)
+    const deadline = Date.now() + 2000;
+    let found = null;
+    while (Date.now() < deadline) {
+      found = await page.$('#toast');
+      if (found) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    expect(found).not.toBeNull();
+    const text = await found!.evaluate((el: Element) => (el as HTMLElement).innerText);
+    expect(text).toBe('Operation successful');
+
+    await found!.dispose();
+    await browser.close();
+  });
 });

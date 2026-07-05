@@ -165,14 +165,20 @@ export interface TelemetryDrilldownOptions {
 // ─── Worker Messages ────────────────────────────────────────────────────────
 
 export type WorkerRequest =
-  | { type: 'serializeAXTree'; id: string; nodes: unknown[]; semanticOnly: boolean }
+  | {
+      type: 'serializeAXTree';
+      id: string;
+      nodes: unknown[];
+      semanticOnly: boolean;
+      targetBackendNodeId?: number;
+    }
   | { type: 'computeStateDelta'; id: string; previous: unknown; current: unknown }
   | { type: 'frame'; data: string; timestamp: number }
   | { type: 'clear' }
   | { type: 'dump'; outputPath: string };
 
 export type WorkerResponse =
-  | { type: 'serializeAXTree'; id: string; markdown: string }
+  | { type: 'serializeAXTree'; id: string; markdown: string; renderedNodeIds: number[] }
   | { type: 'computeStateDelta'; id: string; delta: StateDelta }
   | {
       type: 'dump_complete';

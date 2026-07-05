@@ -55,14 +55,28 @@ export class WorkerBridge {
    * Serialize an AX tree to compressed Markdown.
    * Runs entirely on the worker thread.
    */
-  async serializeAXTree(nodes: unknown[], semanticOnly: boolean): Promise<string> {
+  async serializeAXTree(
+    nodes: unknown[],
+    semanticOnly: boolean,
+    targetBackendNodeId?: number,
+  ): Promise<{ markdown: string; renderedNodeIds: number[] }> {
     const id = `ax-${++this.requestCounter}`;
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, {
-        resolve: (msg: any) => resolve(msg.markdown),
+        resolve: (msg: any) =>
+          resolve({
+            markdown: msg.markdown,
+            renderedNodeIds: msg.renderedNodeIds || [],
+          }),
         reject,
       });
-      this.worker.postMessage({ type: 'serializeAXTree', id, nodes, semanticOnly });
+      this.worker.postMessage({
+        type: 'serializeAXTree',
+        id,
+        nodes,
+        semanticOnly,
+        targetBackendNodeId,
+      });
 
       // Safety timeout
       setTimeout(() => {
@@ -108,6 +122,35 @@ export class WorkerBridge {
    */
   clearBuffers(): void {
     this.worker.postMessage({ type: 'clear' });
+  }
+
+  /**
+   * Dump all in-memory DVR frames to target directory.
+   */
+  async dump(
+    outputPath: string,
+  ): Promise<{ success: boolean; frameCount: number; error?: string }> {
+    const id = `dump-${++this.requestCounter}`;
+    return new Promise((resolve, reject) => {
+      this.pendingRequests.set(id, {
+        resolve: (msg: any) =>
+          resolve({
+            success: msg.success,
+            frameCount: msg.frameCount || 0,
+            error: msg.error,
+          }),
+        reject,
+      });
+      this.worker.postMessage({ type: 'dump', id, outputPath });
+
+      // Safety timeout
+      setTimeout(() => {
+        if (this.pendingRequests.has(id)) {
+          this.pendingRequests.delete(id);
+          reject(new Error('DVR buffer dump timed out (10s)'));
+        }
+      }, 10000);
+    });
   }
 
   /**

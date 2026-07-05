@@ -180,7 +180,7 @@ async function logStepToHistory(
           }
         }),
       );
-      const deltaResult = await getStateDelta(page, cdp, nodeIndex);
+      const deltaResult = await getStateDelta(page, cdp, nodeIndex, workerBridge);
       domDeltaMarkdown = deltaResult.text;
     } catch (err) {
       domDeltaMarkdown = `Error computing DOM delta: ${err instanceof Error ? err.message : String(err)}`;
@@ -272,6 +272,123 @@ export const server = new McpServer({
   version: '2.0.0',
 });
 
+// ─── Automated Crash Diagnostics ────────────────────────────────────────────
+
+async function handleToolCrash(toolName: string, error: any, args: any): Promise<string | null> {
+  try {
+    const page = connectionManager.getPage();
+    if (!page) return null;
+
+    const timestamp = Date.now();
+    const crashDir = path.join(process.cwd(), 'crash_dumps', `crash_${timestamp}_${toolName}`);
+    fs.mkdirSync(crashDir, { recursive: true });
+
+    // 1. Capture screenshot
+    const screenshotPath = path.join(crashDir, 'crash_screenshot.png');
+    await page.screenshot({ path: screenshotPath }).catch(() => {});
+
+    // 2. Dump DVR buffer if active
+    let dvrDumped = false;
+    let dvrCount = 0;
+    if (workerBridge && screencast && screencast.isActive()) {
+      try {
+        const dumpResult = await workerBridge.dump(crashDir);
+        dvrDumped = dumpResult.success;
+        dvrCount = dumpResult.frameCount || 0;
+      } catch {
+        // ignore
+      }
+    }
+
+    // 3. Collate telemetry
+    let networkDetails = '';
+    let consoleDetails = '';
+    if (telemetry) {
+      try {
+        const rawNet = telemetry.drillDown('network');
+        const netEvents = Array.isArray(rawNet) ? rawNet.slice(-15) : [];
+        if (netEvents.length > 0) {
+          networkDetails = netEvents
+            .map((e: any) => {
+              const statusStr = e.status !== undefined ? ` -> ${e.status}` : '';
+              return `- ${e.method} ${e.url}${statusStr}`;
+            })
+            .join('\n');
+        } else {
+          networkDetails = 'No recent network activity.';
+        }
+
+        const rawCon = telemetry.drillDown('console');
+        const conEvents = Array.isArray(rawCon) ? rawCon.slice(-15) : [];
+        if (conEvents.length > 0) {
+          consoleDetails = conEvents.map((e: any) => `- [${e.level}] ${e.text}`).join('\n');
+        } else {
+          consoleDetails = 'No recent console logs.';
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 4. Generate markdown report
+    const reportPath = path.join(crashDir, 'crash_report.md');
+    const reportMarkdown = `# Browser MCP Crash Report - ${toolName}
+
+* **Time of Failure:** ${new Date(timestamp).toISOString()}
+* **Failed Tool:** \`${toolName}\`
+* **Error Message:** \`${error instanceof Error ? error.message : String(error)}\`
+
+## Execution Arguments
+\`\`\`json
+${JSON.stringify(args || {}, null, 2)}
+\`\`\`
+
+## Trace / Stack
+\`\`\`
+${error instanceof Error ? error.stack : 'No stack trace available.'}
+\`\`\`
+
+## Recent Diagnostics
+
+### Console Logs
+${consoleDetails || 'No console logs captured.'}
+
+### Network Activity
+${networkDetails || 'No network activity captured.'}
+
+## Visual Diagnostics
+* **Crash Screenshot:** [crash_screenshot.png](crash_screenshot.png)
+* **DVR Buffer Dump:** ${dvrDumped ? `Successfully dumped ${dvrCount} frames starting with frame_0000.jpg` : 'DVR Buffer dump unavailable.'}
+`;
+
+    fs.writeFileSync(reportPath, reportMarkdown);
+    console.error(
+      `[Browser MCP] Tool ${toolName} failed. Crash diagnostics written to ${crashDir}`,
+    );
+    return crashDir;
+  } catch (err) {
+    console.error('[Browser MCP] Failed to capture crash dump:', err);
+    return null;
+  }
+}
+
+const originalRegisterTool = server.registerTool.bind(server);
+server.registerTool = (name: string, schema: any, callback: any) => {
+  return originalRegisterTool(name, schema, async (...cbArgs: any[]) => {
+    try {
+      return await callback(...cbArgs);
+    } catch (error: any) {
+      if (name !== 'ping') {
+        const crashDir = await handleToolCrash(name, error, cbArgs[0]);
+        if (crashDir && error instanceof Error) {
+          error.message = `${error.message} (Crash diagnostics saved to: ${crashDir})`;
+        }
+      }
+      throw error;
+    }
+  });
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 // LIFECYCLE
 // ═══════════════════════════════════════════════════════════════════════════
@@ -311,7 +428,8 @@ server.registerTool(
         .boolean()
         .optional()
         .describe(
-          'Automatically record screenshots and build a visual markdown history report under the workspace artifacts directory (default: false)',
+          'Automatically record screenshots and build a visual markdown history report under the workspace artifacts directory (default: false). ' +
+            'Note: This starts an implicit screen recording. If you later call browser_start_recording, the implicit recording will be stopped and replaced.',
         ),
       sessionHistoryDir: z
         .string()
@@ -411,6 +529,55 @@ server.registerTool(
     sessionHistoryDir = '';
     stepCounter = 0;
     return { content: [{ type: 'text', text: result }] };
+  },
+);
+
+server.registerTool(
+  'browser_dump_dvr',
+  {
+    description:
+      'Dump the current rolling in-memory DVR visual buffer (the last 10 seconds of browser activity) to a directory as a sequence of JPEG files. ' +
+      'Useful for inspecting what occurred immediately before a failure.',
+    inputSchema: {
+      outputPath: z
+        .string()
+        .optional()
+        .describe(
+          'Custom output directory path (default: process.cwd()/dvr_dumps/dvr_<timestamp>)',
+        ),
+    },
+  },
+  async ({ outputPath }) => {
+    requireSession();
+    if (!screencast || !screencast.isActive()) {
+      throw new Error(
+        'Screencast / DVR buffering is not active. Make sure the browser is launched and running.',
+      );
+    }
+    if (!workerBridge) {
+      throw new Error(
+        'WorkerBridge / serialization worker is not active. DVR buffering is unavailable.',
+      );
+    }
+    const targetDir = outputPath
+      ? path.isAbsolute(outputPath)
+        ? outputPath
+        : path.resolve(process.cwd(), outputPath)
+      : path.join(process.cwd(), 'dvr_dumps', `dvr_${Date.now()}`);
+
+    const result = await workerBridge.dump(targetDir);
+    if (!result.success) {
+      throw new Error(`Failed to dump DVR frames: ${result.error || 'unknown error'}`);
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Successfully dumped ${result.frameCount} DVR frames to directory: ${targetDir}`,
+        },
+      ],
+    };
   },
 );
 
@@ -939,7 +1106,7 @@ server.registerTool(
               }
             }),
           );
-          const deltaResult = await getStateDelta(page, cdp, nodeIndex);
+          const deltaResult = await getStateDelta(page, cdp, nodeIndex, workerBridge);
           domDeltaMarkdown = deltaResult.text;
         } catch (err) {
           domDeltaMarkdown = `Error computing DOM delta: ${err instanceof Error ? err.message : String(err)}`;
@@ -1212,19 +1379,32 @@ server.registerTool(
     try {
       if (args.backendNodeId !== undefined) {
         const frame = await findFrameForBackendNodeId(page, args.backendNodeId);
-        const handle = await (frame as any).mainRealm().adoptBackendNode(args.backendNodeId);
-        if (!handle) throw new Error(`Cannot resolve backendNodeId ${args.backendNodeId}`);
+        const targetCdp = (frame as any).client || connectionManager.getCDPSession();
+        await targetCdp.send('DOM.enable').catch(() => {});
+        const { object } = (await targetCdp.send('DOM.resolveNode', {
+          backendNodeId: args.backendNodeId,
+        })) as { object: { objectId?: string } };
+        if (!object?.objectId)
+          throw new Error(`Cannot resolve backendNodeId ${args.backendNodeId}`);
 
-        const rect = await handle.evaluate((el: Element) => {
-          const r = el.getBoundingClientRect();
-          return { x: r.x, y: r.y, width: r.width, height: r.height };
-        });
+        const evalResult = (await targetCdp.send('Runtime.callFunctionOn', {
+          objectId: object.objectId,
+          functionDeclaration: `function() {
+            const r = this.getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height };
+          }`,
+          returnByValue: true,
+        })) as { result: { value: { x: number; y: number; width: number; height: number } } };
+        const rect = evalResult.result.value;
+        await targetCdp
+          .send('Runtime.releaseObject', { objectId: object.objectId })
+          .catch(() => {});
+
         const frameOffset = await getFrameOffset(frame);
         const x = rect.x + frameOffset.x;
         const y = rect.y + frameOffset.y;
         const width = rect.width;
         const height = rect.height;
-        await handle.dispose();
 
         buffer = (await page.screenshot({
           encoding: 'base64',
@@ -1272,7 +1452,9 @@ server.registerTool(
   {
     description:
       'Start recording screencast frames in the background to compile a video. ' +
-      'Auto-stops after 5 minutes of inactivity. Call browser_stop_recording to compile and finalize.',
+      'Auto-stops after 5 minutes of inactivity. Call browser_stop_recording to compile and finalize.\n\n' +
+      'Note: If autoTrackHistory was enabled in browser_launch, an implicit recording is already running. ' +
+      'Calling this tool will stop the implicit recording and start a new explicit one at the specified location.',
     inputSchema: {
       outputDir: z
         .string()
@@ -1286,6 +1468,11 @@ server.registerTool(
     requireSession();
     if (!screencast) {
       throw new Error('Screencast not initialized. Launch browser first.');
+    }
+    // If autoTrackHistory started an implicit recording, stop it gracefully
+    // so the explicit recording can take over.
+    if (screencast.isRecordingActive() && autoTrackHistory) {
+      await screencast.stopRecording().catch(() => {});
     }
     const resolvedOutputDir = outputDir
       ? resolveSafePath(outputDir)
@@ -1358,7 +1545,7 @@ server.registerTool(
     // Checkpoint for state delta tracking
     nodeIndex.checkpoint();
 
-    const result = await getSemanticSurface(page, cdp, nodeIndex, { semanticOnly });
+    const result = await getSemanticSurface(page, cdp, nodeIndex, { semanticOnly }, workerBridge);
     return { content: [{ type: 'text', text: result.markdown }] };
   },
 );
@@ -1410,7 +1597,13 @@ server.registerTool(
         (targetFrame as any)._id ?? (targetFrame as any)._frameId ?? (targetFrame as any).id;
     }
 
-    const result = await getElementTree(cdp, nodeIndex, backendNodeId, { semanticOnly, frameId });
+    const result = await getElementTree(
+      cdp,
+      nodeIndex,
+      backendNodeId,
+      { semanticOnly, frameId },
+      workerBridge,
+    );
     return {
       content: [
         { type: 'text', text: result.text },
@@ -1440,9 +1633,19 @@ server.registerTool(
       '3. Never dump all logs/network at once. Always start with the summary.',
   },
   async () => {
-    const { page } = requireSession();
+    const { page, cdp } = requireSession();
     const tel = requireTelemetry();
     const summary = tel.getSummary() as any;
+
+    try {
+      const response = await cdp.send('Performance.getMetrics');
+      const detachedMetric = response.metrics.find((m) => m.name === 'DetachedDOMNodes');
+      if (detachedMetric) {
+        summary.detachedDOMNodes = detachedMetric.value;
+      }
+    } catch {
+      // Ignore performance metrics errors
+    }
 
     try {
       const activeOverlay = await page.evaluate(() => {
@@ -1544,7 +1747,7 @@ server.registerTool(
   },
   async () => {
     const { page, cdp } = requireSession();
-    const result = await getStateDelta(page, cdp, nodeIndex);
+    const result = await getStateDelta(page, cdp, nodeIndex, workerBridge);
     return { content: [{ type: 'text', text: result.text }] };
   },
 );
@@ -1949,51 +2152,84 @@ server.registerTool(
     description:
       'Assert the state of a specific element without pulling the full semantic surface. ' +
       'Returns: visible (boolean), disabled (boolean), text content, checked state (for checkboxes/radios), and backendNodeId.\n\n' +
-      'Use this for quick state checks on known elements after an action, rather than re-fetching the entire page.',
+      'Use this for quick state checks on known elements after an action, rather than re-fetching the entire page.\n\n' +
+      'Supports cross-iframe elements when using backendNodeId. Optionally set timeoutMs to poll for the element (useful for async UI changes like toasts or loading spinners).',
     inputSchema: {
       backendNodeId: z.number().optional().describe('Backend DOM node ID of the element'),
       selector: z.string().optional().describe('CSS selector to find the element'),
+      timeoutMs: z
+        .number()
+        .optional()
+        .describe(
+          'If provided, poll for the element at ~100ms intervals until found or timeout elapses. ' +
+            'Useful for waiting on async UI changes (e.g., toasts, dialogs, loading spinners). Omit for instant check.',
+        ),
     },
   },
-  async ({ backendNodeId, selector }) => {
+  async ({ backendNodeId, selector, timeoutMs }) => {
     const { page, cdp } = requireSession();
+
+    if (!backendNodeId && !selector) {
+      throw new Error('Must provide either backendNodeId or selector.');
+    }
+
+    const resolveElement = async () => {
+      let targetEl;
+      let resolvedId = backendNodeId;
+
+      if (backendNodeId) {
+        // Use findFrameForBackendNodeId to support cross-iframe elements
+        const frame = await findFrameForBackendNodeId(page, backendNodeId);
+        targetEl = await (frame as any)
+          .mainRealm()
+          .adoptBackendNode(backendNodeId)
+          .catch(() => null);
+      } else if (selector) {
+        for (const frame of page.frames()) {
+          targetEl = await frame.$(selector);
+          if (targetEl) {
+            // Resolve backendNodeId from the found element
+            const remoteObject =
+              (targetEl as any).remoteObject?.() || (targetEl as any)._remoteObject;
+            if (remoteObject?.objectId) {
+              try {
+                const { node } = await cdp.send('DOM.describeNode', {
+                  objectId: remoteObject.objectId,
+                });
+                resolvedId = node.backendNodeId;
+              } catch {
+                /* best effort */
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      return { targetEl, resolvedId };
+    };
 
     let targetEl;
     let resolvedBackendNodeId = backendNodeId;
 
-    if (backendNodeId) {
-      const frame = page.mainFrame() as unknown as {
-        mainRealm(): {
-          adoptBackendNode(id: number): Promise<import('puppeteer-core').ElementHandle<Element>>;
-        };
-      };
-      targetEl = await frame
-        .mainRealm()
-        .adoptBackendNode(backendNodeId)
-        .catch(() => null);
-    } else if (selector) {
-      for (const frame of page.frames()) {
-        targetEl = await frame.$(selector);
-        if (targetEl) break;
+    if (timeoutMs && timeoutMs > 0) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const result = await resolveElement();
+        if (result.targetEl) {
+          targetEl = result.targetEl;
+          resolvedBackendNodeId = result.resolvedId;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
       }
     } else {
-      throw new Error('Must provide either backendNodeId or selector.');
+      const result = await resolveElement();
+      targetEl = result.targetEl;
+      resolvedBackendNodeId = result.resolvedId;
     }
 
     if (!targetEl) throw new Error('Element not found.');
-
-    // Resolve backendNodeId if not provided
-    if (!resolvedBackendNodeId) {
-      const remoteObject = (targetEl as any).remoteObject?.() || (targetEl as any)._remoteObject;
-      if (remoteObject?.objectId) {
-        try {
-          const { node } = await cdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
-          resolvedBackendNodeId = node.backendNodeId;
-        } catch {
-          /* best effort */
-        }
-      }
-    }
 
     const result = await targetEl.evaluate((el: Element) => {
       const htmlEl = el as HTMLElement;
@@ -2119,26 +2355,79 @@ server.registerTool(
   {
     description:
       'Emulate slow network conditions by throttling bandwidth and adding latency. ' +
-      'Useful for testing loading states, skeleton screens, and timeout handling.',
+      'Useful for testing loading states, skeleton screens, and timeout handling.\n\n' +
+      'You can either provide a preset (e.g., "3g-slow", "3g", "4g", "off") or specify raw values. ' +
+      'Use preset "off" to disable throttling and restore normal network speed.',
     inputSchema: {
-      latencyMs: z.number().describe('Latency delay in milliseconds'),
-      downloadKbps: z.number().describe('Max download bandwidth in Kbps (0 = no limit)'),
-      uploadKbps: z.number().describe('Max upload bandwidth in Kbps (0 = no limit)'),
+      preset: z
+        .enum(['3g-slow', '3g', '4g', 'off'])
+        .optional()
+        .describe(
+          'Named network preset. "3g-slow" = 400ms/400Kbps, "3g" = 100ms/750Kbps, "4g" = 20ms/4000Kbps, "off" = disable throttling. ' +
+            'Overrides latencyMs/downloadKbps/uploadKbps when set.',
+        ),
+      latencyMs: z.number().optional().describe('Latency delay in milliseconds'),
+      downloadKbps: z.number().optional().describe('Max download bandwidth in Kbps (0 = no limit)'),
+      uploadKbps: z.number().optional().describe('Max upload bandwidth in Kbps (0 = no limit)'),
     },
   },
-  async ({ latencyMs, downloadKbps, uploadKbps }) => {
+  async ({ preset, latencyMs, downloadKbps, uploadKbps }) => {
     const { cdp } = requireSession();
+
+    const presets: Record<string, { latency: number; down: number; up: number }> = {
+      '3g-slow': { latency: 400, down: 400, up: 400 },
+      '3g': { latency: 100, down: 750, up: 250 },
+      '4g': { latency: 20, down: 4000, up: 3000 },
+      off: { latency: 0, down: 0, up: 0 },
+    };
+
+    if (preset === 'off') {
+      // Fully disable network emulation
+      await cdp.send('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      });
+      return {
+        content: [{ type: 'text', text: 'Network throttling disabled. Normal speed restored.' }],
+      };
+    }
+
+    let lat: number;
+    let down: number;
+    let up: number;
+
+    if (preset && presets[preset]) {
+      const p = presets[preset];
+      lat = p.latency;
+      down = p.down;
+      up = p.up;
+    } else {
+      if (latencyMs === undefined || downloadKbps === undefined || uploadKbps === undefined) {
+        throw new Error(
+          'Must provide either a preset or all three of latencyMs, downloadKbps, and uploadKbps.',
+        );
+      }
+      lat = latencyMs;
+      down = downloadKbps;
+      up = uploadKbps;
+    }
+
     await cdp.send('Network.emulateNetworkConditions', {
       offline: false,
-      latency: latencyMs,
-      downloadThroughput: downloadKbps > 0 ? downloadKbps * 125 : -1,
-      uploadThroughput: uploadKbps > 0 ? uploadKbps * 125 : -1,
+      latency: lat,
+      downloadThroughput: down > 0 ? down * 125 : -1,
+      uploadThroughput: up > 0 ? up * 125 : -1,
     });
+    const label = preset
+      ? `preset "${preset}"`
+      : `${lat}ms latency, ${down}Kbps down, ${up}Kbps up`;
     return {
       content: [
         {
           type: 'text',
-          text: `Network throttled: ${latencyMs}ms latency, ${downloadKbps}Kbps down, ${uploadKbps}Kbps up.`,
+          text: `Network throttled: ${label}.`,
         },
       ],
     };
@@ -2363,13 +2652,21 @@ server.registerTool(
 
       let backendNodeId = 0;
       try {
-        const handle = await page.evaluateHandle(() => document.activeElement);
-        const remoteObject = (handle as any).remoteObject?.() || (handle as any)._remoteObject;
-        if (remoteObject?.objectId) {
-          const { node } = await cdp.send('DOM.describeNode', { objectId: remoteObject.objectId });
+        // Use CDP Runtime.evaluate to reliably get the active element's objectId,
+        // avoiding unreliable Puppeteer internal accessors (_remoteObject / remoteObject()).
+        const evalResult = (await cdp.send('Runtime.evaluate', {
+          expression: 'document.activeElement',
+          returnByValue: false,
+        })) as { result: { objectId?: string } };
+        if (evalResult.result?.objectId) {
+          const { node } = await cdp.send('DOM.describeNode', {
+            objectId: evalResult.result.objectId,
+          });
           backendNodeId = node.backendNodeId;
+          await cdp
+            .send('Runtime.releaseObject', { objectId: evalResult.result.objectId })
+            .catch(() => {});
         }
-        await handle.dispose().catch(() => {});
       } catch {
         /* continue */
       }

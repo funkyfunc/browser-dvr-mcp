@@ -8,6 +8,8 @@
 
 import type { CDPSession, Page } from 'puppeteer-core';
 import { ImmutableNodeIndex } from '../core/ImmutableNodeIndex.js';
+import type { WorkerBridge } from '../workers/workerBridge.js';
+import type { StateDelta } from '../core/types.js';
 
 /**
  * Computes the structural delta between the current AX tree state
@@ -22,6 +24,7 @@ export async function getStateDelta(
   page: Page,
   cdpSession: CDPSession,
   nodeIndex: ImmutableNodeIndex,
+  workerBridge?: WorkerBridge | null,
 ): Promise<{
   text: string;
 }> {
@@ -49,7 +52,29 @@ export async function getStateDelta(
   );
 
   // Compute delta against last checkpoint
-  const delta = nodeIndex.computeDelta();
+  let delta: StateDelta | null = null;
+  if (workerBridge) {
+    try {
+      const previous = nodeIndex.getPreviousSnapshots();
+      if (previous) {
+        const current = nodeIndex.getAllSnapshots();
+        const previousRecord: Record<string, unknown> = {};
+        for (const [k, v] of previous.entries()) {
+          previousRecord[String(k)] = v;
+        }
+        const currentRecord: Record<string, unknown> = {};
+        for (const [k, v] of current.entries()) {
+          currentRecord[String(k)] = v;
+        }
+        delta = (await workerBridge.computeStateDelta(previousRecord, currentRecord)) as StateDelta;
+      }
+    } catch (err) {
+      console.error('Worker computeStateDelta failed, falling back to main thread:', err);
+      delta = nodeIndex.computeDelta();
+    }
+  } else {
+    delta = nodeIndex.computeDelta();
+  }
 
   // Take new checkpoint for next delta
   nodeIndex.checkpoint();

@@ -144,3 +144,7 @@ vite.config.ts.timestamp-*
 
 # OS files
 .DS_Store
+
+# MCP local diagnostic dumps
+crash_dumps/
+dvr_dumps/
