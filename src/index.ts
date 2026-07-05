@@ -10,6 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import os from 'os';
 import path from 'path';
+import fs from 'fs';
 
 export function resolveSafePath(userPath: string): string {
   if (path.isAbsolute(userPath)) {
@@ -74,6 +75,11 @@ let telemetry: SessionTelemetryManager | null = null;
 let screencast: ScreencastManager | null = null;
 let fetchInterceptHandler: ((event: any) => Promise<void>) | null = null;
 
+// Auto-history tracking state
+let autoTrackHistory = false;
+let sessionHistoryDir = '';
+let stepCounter = 0;
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function requireSession(): {
@@ -91,9 +97,143 @@ function requireTelemetry(): SessionTelemetryManager {
   return telemetry;
 }
 
+async function logStepToHistory(
+  actionName: string,
+  actionDetails: string,
+  feedback: string,
+  startTime: number,
+): Promise<void> {
+  if (!autoTrackHistory || !sessionHistoryDir) return;
+
+  stepCounter++;
+  const stepId = String(stepCounter).padStart(3, '0');
+  const screenshotFileName = `step_${stepId}.png`;
+  const screenshotPath = path.join(sessionHistoryDir, screenshotFileName);
+
+  const page = connectionManager.getPage();
+  const cdp = connectionManager.getCDPSession();
+  if (!page || !cdp) return;
+
+  // 1. Capture screenshot
+  try {
+    await page.screenshot({ path: screenshotPath });
+  } catch (err) {
+    console.error('Failed to capture screenshot for history log:', err);
+  }
+
+  // 2. Compute DOM Delta
+  let domDeltaMarkdown = '';
+  if (actionName === 'navigate') {
+    domDeltaMarkdown = `Page transition to ${actionDetails} occurred. Node index has been reset and a new baseline checkpointed.`;
+  } else {
+    try {
+      const frames = page.frames();
+      for (const frame of frames) {
+        const isMainFrame = frame === page.mainFrame();
+        try {
+          const params: Record<string, unknown> = {};
+          if (!isMainFrame) {
+            const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+            if (frameId && typeof frameId === 'string') {
+              params.frameId = frameId;
+            } else {
+              continue;
+            }
+          }
+          const result = await cdp.send('Accessibility.getFullAXTree', params);
+          nodeIndex.buildFromAXNodes(result.nodes as any[]);
+        } catch {
+          // Skip inaccessible frames
+        }
+      }
+      const deltaResult = await getStateDelta(page, cdp, nodeIndex);
+      domDeltaMarkdown = deltaResult.text;
+    } catch (err) {
+      domDeltaMarkdown = `Error computing DOM delta: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  // 3. Filter network/console since startTime
+  let networkDetails = '';
+  let consoleDetails = '';
+  if (telemetry) {
+    try {
+      const rawNet = telemetry.drillDown('network');
+      const netEvents = Array.isArray(rawNet)
+        ? rawNet.filter((e: any) => e.timestamp >= startTime)
+        : [];
+      if (netEvents.length > 0) {
+        networkDetails = netEvents
+          .map((e: any) => {
+            const statusStr = e.status !== undefined ? ` -> ${e.status}` : '';
+            const durationStr = e.duration !== undefined ? ` (${e.duration}ms)` : '';
+            const errorStr = e.errorText ? ` failed: ${e.errorText}` : '';
+            return `- ${e.method} ${e.url}${statusStr}${durationStr}${errorStr}`;
+          })
+          .join('\n');
+      } else {
+        networkDetails = 'No network activity.';
+      }
+
+      const rawCon = telemetry.drillDown('console');
+      const conEvents = Array.isArray(rawCon)
+        ? rawCon.filter((e: any) => e.timestamp >= startTime)
+        : [];
+      if (conEvents.length > 0) {
+        consoleDetails = conEvents.map((e: any) => `- [${e.level}] ${e.text}`).join('\n');
+      } else {
+        consoleDetails = 'No console logs.';
+      }
+    } catch (err) {
+      console.error('Failed to query telemetry for step history:', err);
+    }
+  }
+
+  // 4. Append to session_history.md
+  const reportPath = path.join(sessionHistoryDir, 'session_history.md');
+  const stepMarkdown = `
+## Step ${stepCounter}: ${actionName} (${actionDetails})
+
+* **Time:** ${new Date().toISOString()}
+* **Feedback:** ${feedback}
+
+### DOM Changes
+${domDeltaMarkdown}
+
+### Network Activity
+${networkDetails}
+
+### Console Logs
+${consoleDetails}
+
+### Visual State
+![Step ${stepCounter} Screenshot](${screenshotFileName})
+
+---
+`;
+
+  try {
+    if (stepCounter === 1) {
+      const header = `# Best Browser Session History
+      
+* **Session ID:** ${telemetry?.id || 'unknown'}
+* **Started At:** ${new Date(telemetry?.startedAt || Date.now()).toISOString()}
+* **Mode:** ${telemetry?.mode || 'agent'}
+
+---
+`;
+      fs.writeFileSync(reportPath, header + stepMarkdown);
+    } else {
+      fs.appendFileSync(reportPath, stepMarkdown);
+    }
+  } catch (err) {
+    console.error('Failed to write to session history log file:', err);
+  }
+}
+
 // ─── MCP Server ─────────────────────────────────────────────────────────────
 
-const server = new McpServer({
+export const server = new McpServer({
   name: 'best-browser-mcp',
   version: '2.0.0',
 });
@@ -133,9 +273,27 @@ server.registerTool(
           'Path to a persistent Chrome user profile directory. Useful for preserving cookies and localStorage across sessions.',
         ),
       url: z.string().url().optional().describe('URL to navigate to immediately after launch.'),
+      autoTrackHistory: z
+        .boolean()
+        .optional()
+        .describe(
+          'Automatically record screenshots and build a visual markdown history report under the workspace artifacts directory (default: false)',
+        ),
+      sessionHistoryDir: z
+        .string()
+        .optional()
+        .describe(
+          'Custom directory path to save the session history and screenshots (default: process.cwd()/session_history/sess_<timestamp>)',
+        ),
     },
   },
-  async ({ headless, userDataDir, url }) => {
+  async ({
+    headless,
+    userDataDir,
+    url,
+    autoTrackHistory: trackHistory = false,
+    sessionHistoryDir: historyDir,
+  }) => {
     const result = await connectionManager.launch({ headless, userDataDir });
 
     // Initialize telemetry
@@ -160,6 +318,26 @@ server.registerTool(
       await screencast.start();
     } catch (err) {
       console.error('Screencast start failed (non-fatal):', err);
+    }
+
+    // Auto track history setup
+    autoTrackHistory = !!trackHistory;
+    if (autoTrackHistory) {
+      sessionHistoryDir = historyDir
+        ? path.isAbsolute(historyDir)
+          ? historyDir
+          : path.resolve(process.cwd(), historyDir)
+        : path.join(process.cwd(), 'session_history', telemetry.id);
+      fs.mkdirSync(sessionHistoryDir, { recursive: true });
+
+      // Start screen recording if screencast is active
+      if (screencast) {
+        try {
+          await screencast.startRecording(sessionHistoryDir);
+        } catch (err) {
+          console.error('Failed to start automatic session recording:', err);
+        }
+      }
     }
 
     return {
@@ -195,6 +373,9 @@ server.registerTool(
       telemetry.destroy();
       telemetry = null;
     }
+    autoTrackHistory = false;
+    sessionHistoryDir = '';
+    stepCounter = 0;
     return { content: [{ type: 'text', text: result }] };
   },
 );
@@ -221,14 +402,107 @@ server.registerTool(
             '"networkidle2" allows up to 2 open connections (for long-polling/WebSocket apps). ' +
             '"domcontentloaded" returns as soon as the DOM is parsed (fastest, but page may still be loading).',
         ),
+      returnDelta: z
+        .boolean()
+        .optional()
+        .describe(
+          'If true, immediately computes and returns a unified delta of what changed (DOM changes, network traffic, console logs) directly in the feedback.',
+        ),
+      settleTimeMs: z
+        .number()
+        .optional()
+        .describe(
+          'Delay in ms after navigation completes before capturing the delta and screenshots (default: 250ms).',
+        ),
     },
   },
-  async ({ url, waitUntil }) => {
+  async ({ url, waitUntil, returnDelta = false, settleTimeMs }) => {
     requireSession();
+    const startTime = Date.now();
     const result = await connectionManager.navigate(url, { waitUntil });
-    requireTelemetry().addNavigation(url);
-    nodeIndex.checkpoint(); // Checkpoint for delta tracking across navigations
-    return { content: [{ type: 'text', text: result }] };
+    const tel = requireTelemetry();
+    tel.addNavigation(url);
+
+    // Reset nodeIndex and capture new baseline checkpoint
+    nodeIndex.clear();
+    const { page, cdp } = requireSession();
+    try {
+      const frames = page.frames();
+      for (const frame of frames) {
+        const isMainFrame = frame === page.mainFrame();
+        try {
+          const params: Record<string, unknown> = {};
+          if (!isMainFrame) {
+            const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+            if (frameId && typeof frameId === 'string') {
+              params.frameId = frameId;
+            } else {
+              continue;
+            }
+          }
+          const result = await cdp.send('Accessibility.getFullAXTree', params);
+          nodeIndex.buildFromAXNodes(result.nodes as any[]);
+        } catch {
+          // Skip inaccessible frames
+        }
+      }
+    } catch {
+      // Best effort
+    }
+    nodeIndex.checkpoint(); // Checkpoint for delta tracking of subsequent actions
+
+    let feedback = result;
+
+    const finalSettleTime = settleTimeMs !== undefined ? settleTimeMs : 250;
+    if (finalSettleTime > 0) {
+      await new Promise((r) => setTimeout(r, finalSettleTime));
+    }
+
+    if (autoTrackHistory && sessionHistoryDir) {
+      await logStepToHistory('navigate', url, feedback, startTime);
+    }
+
+    if (returnDelta) {
+      const domDeltaMarkdown = `Page transition to ${url} occurred. Node index has been reset and a new baseline checkpointed.`;
+
+      // Filter network/console
+      let networkDetails = '';
+      let consoleDetails = '';
+      try {
+        const rawNet = tel.drillDown('network');
+        const netEvents = Array.isArray(rawNet)
+          ? rawNet.filter((e: any) => e.timestamp >= startTime)
+          : [];
+        if (netEvents.length > 0) {
+          networkDetails = netEvents
+            .map((e: any) => {
+              const statusStr = e.status !== undefined ? ` -> ${e.status}` : '';
+              const durationStr = e.duration !== undefined ? ` (${e.duration}ms)` : '';
+              const errorStr = e.errorText ? ` failed: ${e.errorText}` : '';
+              return `- ${e.method} ${e.url}${statusStr}${durationStr}${errorStr}`;
+            })
+            .join('\n');
+        } else {
+          networkDetails = 'No network activity.';
+        }
+
+        const rawCon = tel.drillDown('console');
+        const conEvents = Array.isArray(rawCon)
+          ? rawCon.filter((e: any) => e.timestamp >= startTime)
+          : [];
+        if (conEvents.length > 0) {
+          consoleDetails = conEvents.map((e: any) => `- [${e.level}] ${e.text}`).join('\n');
+        } else {
+          consoleDetails = 'No console logs.';
+        }
+      } catch (err) {
+        console.error('Failed to query telemetry for returnDelta:', err);
+      }
+
+      feedback += `\n\n### Action Delta Report\n\n#### DOM Changes:\n${domDeltaMarkdown}\n\n#### Network Activity:\n${networkDetails}\n\n#### Console Logs:\n${consoleDetails}`;
+    }
+
+    return { content: [{ type: 'text', text: feedback }] };
   },
 );
 
@@ -322,6 +596,18 @@ server.registerTool(
         .describe(
           'If true, bypass spatial occlusion validation and force interaction at the element center (default: false).',
         ),
+      returnDelta: z
+        .boolean()
+        .optional()
+        .describe(
+          'If true, immediately computes and returns a unified delta of what changed (DOM changes, network traffic, console logs) directly in the feedback.',
+        ),
+      settleTimeMs: z
+        .number()
+        .optional()
+        .describe(
+          'Delay in ms after the interaction completes before capturing the delta and screenshots (default: 250ms).',
+        ),
     },
   },
   async ({
@@ -339,6 +625,8 @@ server.registerTool(
     frameIndex,
     offset,
     force,
+    returnDelta = false,
+    settleTimeMs,
   }) => {
     const { page, cdp } = requireSession();
     const tel = requireTelemetry();
@@ -346,6 +634,7 @@ server.registerTool(
     // Take checkpoint before action for delta tracking
     nodeIndex.checkpoint();
 
+    const startTime = Date.now();
     let result;
 
     // Resolve target frame context
@@ -579,7 +868,90 @@ server.registerTool(
       }
     }
 
-    return { content: [{ type: 'text', text: result?.feedback || 'Action completed.' }] };
+    let feedback = result?.feedback || 'Action completed.';
+
+    const finalSettleTime = settleTimeMs !== undefined ? settleTimeMs : 250;
+    if (finalSettleTime > 0) {
+      await new Promise((r) => setTimeout(r, finalSettleTime));
+    }
+
+    if (autoTrackHistory && sessionHistoryDir) {
+      const details =
+        backendNodeId !== undefined
+          ? `id: ${backendNodeId}`
+          : coordinate
+            ? `coord: [${coordinate.join(',')}]`
+            : '';
+      await logStepToHistory(action, details, feedback, startTime);
+    }
+
+    if (returnDelta) {
+      // Compute DOM Delta
+      let domDeltaMarkdown = '';
+      try {
+        const frames = page.frames();
+        for (const frame of frames) {
+          const isMainFrame = frame === page.mainFrame();
+          try {
+            const params: Record<string, unknown> = {};
+            if (!isMainFrame) {
+              const frameId = (frame as any)._id ?? (frame as any)._frameId ?? (frame as any).id;
+              if (frameId && typeof frameId === 'string') {
+                params.frameId = frameId;
+              } else {
+                continue;
+              }
+            }
+            const result = await cdp.send('Accessibility.getFullAXTree', params);
+            nodeIndex.buildFromAXNodes(result.nodes as any[]);
+          } catch {
+            // Skip inaccessible frames
+          }
+        }
+        const deltaResult = await getStateDelta(page, cdp, nodeIndex);
+        domDeltaMarkdown = deltaResult.text;
+      } catch (err) {
+        domDeltaMarkdown = `Error computing DOM delta: ${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      // Filter network/console
+      let networkDetails = '';
+      let consoleDetails = '';
+      try {
+        const rawNet = tel.drillDown('network');
+        const netEvents = Array.isArray(rawNet)
+          ? rawNet.filter((e: any) => e.timestamp >= startTime)
+          : [];
+        if (netEvents.length > 0) {
+          networkDetails = netEvents
+            .map((e: any) => {
+              const statusStr = e.status !== undefined ? ` -> ${e.status}` : '';
+              const durationStr = e.duration !== undefined ? ` (${e.duration}ms)` : '';
+              const errorStr = e.errorText ? ` failed: ${e.errorText}` : '';
+              return `- ${e.method} ${e.url}${statusStr}${durationStr}${errorStr}`;
+            })
+            .join('\n');
+        } else {
+          networkDetails = 'No network activity.';
+        }
+
+        const rawCon = tel.drillDown('console');
+        const conEvents = Array.isArray(rawCon)
+          ? rawCon.filter((e: any) => e.timestamp >= startTime)
+          : [];
+        if (conEvents.length > 0) {
+          consoleDetails = conEvents.map((e: any) => `- [${e.level}] ${e.text}`).join('\n');
+        } else {
+          consoleDetails = 'No console logs.';
+        }
+      } catch (err) {
+        console.error('Failed to query telemetry for returnDelta:', err);
+      }
+
+      feedback += `\n\n### Action Delta Report\n\n#### DOM Changes:\n${domDeltaMarkdown}\n\n#### Network Activity:\n${networkDetails}\n\n#### Console Logs:\n${consoleDetails}`;
+    }
+
+    return { content: [{ type: 'text', text: feedback }] };
   },
 );
 

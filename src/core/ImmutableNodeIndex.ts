@@ -151,9 +151,6 @@ export class ImmutableNodeIndex {
       if (JSON.stringify(previous.properties) !== JSON.stringify(current.properties)) {
         changes['properties'] = { previous: previous.properties, current: current.properties };
       }
-      if (JSON.stringify(previous.childIds) !== JSON.stringify(current.childIds)) {
-        changes['children'] = { previous: previous.childIds, current: current.childIds };
-      }
 
       if (Object.keys(changes).length > 0) {
         modified.push({ stableId, changes });
