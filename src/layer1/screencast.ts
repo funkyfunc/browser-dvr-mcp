@@ -6,10 +6,19 @@
 import type { CDPSession } from 'puppeteer-core';
 import type { WorkerBridge } from '../workers/workerBridge.js';
 import ffmpegPath from 'ffmpeg-static';
-import { execFileSync } from 'child_process';
-import { writeFileSync, mkdirSync, unlinkSync, existsSync } from 'fs';
+import { execFile } from 'child_process';
+import { mkdirSync } from 'fs';
+import { writeFile, unlink } from 'fs/promises';
 import { join, resolve, isAbsolute } from 'path';
 import os from 'os';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
+// Upper bound on frames held in memory during a recording. At ~5fps
+// (everyNthFrame:2) this is ~5 minutes; it prevents the base64 frame array
+// from growing without bound if the recording runs long or frames arrive fast.
+const MAX_RECORDING_FRAMES = 1800;
 
 export class ScreencastManager {
   private active = false;
@@ -17,6 +26,7 @@ export class ScreencastManager {
 
   // Recording state
   private recordingFrames: { data: string; timestamp: number }[] = [];
+  private recordingFramesDropped = 0;
   private isRecording = false;
   private recordingStartTimestamp = 0;
   private recordingLimitTimeout: NodeJS.Timeout | null = null;
@@ -52,8 +62,14 @@ export class ScreencastManager {
         this.workerBridge.postFrame(event.data, Date.now());
       }
 
-      // Collect frames if recording is active
+      // Collect frames if recording is active. Drop the oldest frame once the
+      // cap is reached so a long recording can't exhaust memory (base64 frames
+      // are large and were previously unbounded).
       if (this.isRecording) {
+        if (this.recordingFrames.length >= MAX_RECORDING_FRAMES) {
+          this.recordingFrames.shift();
+          this.recordingFramesDropped++;
+        }
         this.recordingFrames.push({ data: event.data, timestamp: Date.now() });
       }
 
@@ -117,6 +133,7 @@ export class ScreencastManager {
     mkdirSync(this.recordingOutputDir, { recursive: true });
 
     this.recordingFrames = [];
+    this.recordingFramesDropped = 0;
     this.recordingStartTimestamp = Date.now();
     this.isRecording = true;
 
@@ -165,11 +182,16 @@ export class ScreencastManager {
 
     const outputDir = this.recordingOutputDir;
 
-    // Write JPEGs to outputDir
-    for (let i = 0; i < frames.length; i++) {
-      const filename = `frame_${String(i).padStart(5, '0')}.jpg`;
-      writeFileSync(join(outputDir, filename), Buffer.from(frames[i].data, 'base64'));
-    }
+    // Write JPEGs to outputDir asynchronously so we never block the Node event
+    // loop (and the MCP JSON-RPC transport) during finalization.
+    await Promise.all(
+      frames.map((frame, i) =>
+        writeFile(
+          join(outputDir, `frame_${String(i).padStart(5, '0')}.jpg`),
+          Buffer.from(frame.data, 'base64'),
+        ),
+      ),
+    );
 
     const fps =
       frames.length > 0 ? Math.max(1, Math.round(frames.length / Math.max(durationSeconds, 1))) : 1;
@@ -178,8 +200,10 @@ export class ScreencastManager {
     let videoPath: string | null = null;
     if (ffmpegPath && frames.length > 0) {
       try {
-        execFileSync(
-          ffmpegPath as any,
+        // Async ffmpeg — previously execFileSync froze the whole server for up
+        // to 30s while assembling the MP4.
+        await execFileAsync(
+          ffmpegPath as unknown as string,
           [
             '-y',
             '-framerate',
@@ -198,17 +222,11 @@ export class ScreencastManager {
         );
         videoPath = videoOutputPath;
         // Clean up temporary frame files to save disk space
-        for (let i = 0; i < frames.length; i++) {
-          try {
-            const filename = `frame_${String(i).padStart(5, '0')}.jpg`;
-            const filePath = join(outputDir, filename);
-            if (existsSync(filePath)) {
-              unlinkSync(filePath);
-            }
-          } catch {
-            // ignore
-          }
-        }
+        await Promise.all(
+          frames.map((_, i) =>
+            unlink(join(outputDir, `frame_${String(i).padStart(5, '0')}.jpg`)).catch(() => {}),
+          ),
+        );
       } catch (err) {
         console.error('ffmpeg assembly failed:', err);
       }
@@ -216,6 +234,7 @@ export class ScreencastManager {
 
     const manifest = {
       frameCount: frames.length,
+      droppedFrames: this.recordingFramesDropped,
       durationSeconds,
       startedAt: new Date(this.recordingStartTimestamp).toISOString(),
       stoppedAt: new Date().toISOString(),
@@ -230,7 +249,7 @@ export class ScreencastManager {
     };
 
     const manifestPath = join(outputDir, 'manifest.json');
-    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
     return {
       status: 'success',

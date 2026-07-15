@@ -127,16 +127,21 @@ describe('Developer Feedback Fixes Regression Tests', () => {
     await browser.close();
   });
 
-  it('should resolve safe paths correctly', async () => {
-    const { resolveSafePath } = await import('../src/index.js');
+  it('should resolve safe paths and contain them to the output base dir', async () => {
+    const { resolveSafePath, outputBaseDir } = await import('../src/index.js');
+    const base = outputBaseDir();
 
-    // Absolute paths should remain unchanged
-    expect(resolveSafePath('/foo/bar')).toBe('/foo/bar');
-
-    // Relative paths should resolve against CWD if CWD is not root
+    // Relative paths resolve inside the base dir.
     const resolvedRelative = resolveSafePath('recordings/rec_123');
     expect(resolvedRelative).toContain('recordings/rec_123');
-    expect(resolvedRelative).not.toBe('/recordings/rec_123');
+    expect(resolvedRelative.startsWith(base)).toBe(true);
+
+    // An absolute path INSIDE the base is allowed and normalized.
+    expect(resolveSafePath(`${base}/screenshots/a.png`)).toBe(`${base}/screenshots/a.png`);
+
+    // Traversal escapes and absolute paths outside the base are rejected.
+    expect(() => resolveSafePath('../../etc/passwd')).toThrow(/output directory/);
+    expect(() => resolveSafePath('/etc/passwd')).toThrow(/output directory/);
   });
 
   it('should bypass spatial validation when force is true', async () => {
@@ -594,5 +599,66 @@ describe('Developer Feedback Fixes Regression Tests', () => {
 
     await found!.dispose();
     await browser.close();
+  });
+
+  it('should auto-correct port and navigate when target port is closed but shifted port is open', async () => {
+    const http = await import('http');
+    const { CDPConnectionManager } = await import('../src/core/CDPConnectionManager.js');
+
+    // Find an open port dynamically
+    const tempServer1 = http.createServer((_req: any, res: any) => {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<h1>Shifted Port Works</h1>');
+    });
+
+    // Let the OS pick a port for the shifted server
+    await new Promise<void>((resolve) => {
+      tempServer1.listen(0, '127.0.0.1', () => resolve());
+    });
+
+    const address = tempServer1.address() as any;
+    const activeShiftedPort = address.port;
+
+    // We want the target port to be closed. Let's make targetPort = activeShiftedPort - 1
+    const closedTargetPort = activeShiftedPort - 1;
+
+    // Launch browser via connection manager
+    const manager = new CDPConnectionManager();
+    await manager.launch({ headless: true });
+
+    // Navigate to the closed port, which should auto-correct to activeShiftedPort (closedTargetPort + 1)
+    const result = await manager.navigate(`http://127.0.0.1:${closedTargetPort}`);
+
+    expect(result).toContain(`Automatically shifted to active port ${activeShiftedPort}`);
+
+    // Verify it actually loaded the shifted port page content
+    const page = manager.getPage()!;
+    const content = await page.content();
+    expect(content).toContain('Shifted Port Works');
+
+    await manager.close();
+    await new Promise<void>((resolve) => tempServer1.close(() => resolve()));
+  });
+
+  it('should throw diagnostic error listing active ports when local port is closed and no shift match is found', async () => {
+    const { CDPConnectionManager } = await import('../src/core/CDPConnectionManager.js');
+
+    const manager = new CDPConnectionManager();
+    await manager.launch({ headless: true });
+
+    // Navigate to a very unlikely port that is closed
+    const closedPort = 28189;
+
+    let errorMsg = '';
+    try {
+      await manager.navigate(`http://127.0.0.1:${closedPort}`);
+    } catch (err: any) {
+      errorMsg = err.message;
+    }
+
+    expect(errorMsg).toContain('Failed to connect to local server at 127.0.0.1:28189');
+    expect(errorMsg).toContain('Active listening TCP ports:');
+
+    await manager.close();
   });
 });

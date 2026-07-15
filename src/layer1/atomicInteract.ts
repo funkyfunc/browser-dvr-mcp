@@ -24,6 +24,37 @@ export interface AtomicInteractResult {
   mutationSummary?: string;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wait for the DOM to settle after an action instead of sleeping a fixed 150ms.
+ * Returns as soon as no mutation has been observed for `quietMs` (fast on static
+ * pages), but never before `minMs` and never after `maxMs`. Falls back to a
+ * fixed floor if telemetry is unavailable.
+ */
+async function settle(
+  telemetry: SessionTelemetryManager,
+  {
+    minMs = 100,
+    quietMs = 100,
+    maxMs = 600,
+  }: { minMs?: number; quietMs?: number; maxMs?: number } = {},
+): Promise<void> {
+  // Fall back to a fixed settle when mutation timing isn't available (e.g. a
+  // lightweight telemetry stub in tests).
+  if (typeof telemetry?.getLastMutationTime !== 'function') {
+    await sleep(150);
+    return;
+  }
+  const start = Date.now();
+  await sleep(minMs);
+  while (Date.now() - start < maxMs) {
+    const sinceMutation = Date.now() - telemetry.getLastMutationTime();
+    if (sinceMutation >= quietMs) return;
+    await sleep(25);
+  }
+}
+
 /**
  * Atomic click: resolve → validate → dispatch in one tick.
  */
@@ -70,7 +101,7 @@ export async function atomicClick(
   });
 
   // Brief settle time for DOM mutations
-  await new Promise((r) => setTimeout(r, 150));
+  await settle(telemetry);
 
   telemetry.addInteraction({
     type: 'click',
@@ -128,7 +159,7 @@ export async function coordinateClick(
     clickCount: 1,
   });
 
-  await new Promise((r) => setTimeout(r, 150));
+  await settle(telemetry);
 
   telemetry.addInteraction({
     type: 'click',
@@ -207,7 +238,7 @@ export async function atomicDoubleClick(
     clickCount: 2,
   });
 
-  await new Promise((r) => setTimeout(r, 150));
+  await settle(telemetry);
 
   telemetry.addInteraction({
     type: 'click', // track as click
@@ -288,7 +319,7 @@ export async function atomicType(
   // Type text using insertText
   await cdpSession.send('Input.insertText', { text });
 
-  await new Promise((r) => setTimeout(r, 150));
+  await settle(telemetry);
 
   telemetry.addInteraction({
     type: 'type',
@@ -359,7 +390,7 @@ export async function atomicClear(
   });
   await cdpSession.send('Input.insertText', { text: '' });
 
-  await new Promise((r) => setTimeout(r, 150));
+  await settle(telemetry);
 
   telemetry.addInteraction({
     type: 'type',
@@ -413,7 +444,7 @@ export async function atomicHover(
     y: Math.round(validation.coordinates.y),
   });
 
-  await new Promise((r) => setTimeout(r, 150));
+  await settle(telemetry);
 
   telemetry.addInteraction({
     type: 'hover',
@@ -612,7 +643,7 @@ export async function atomicDragAndDrop(
     clickCount: 1,
   });
 
-  await new Promise((r) => setTimeout(r, 150));
+  await settle(telemetry);
 
   telemetry.addInteraction({
     type: 'drag' as any,

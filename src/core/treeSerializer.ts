@@ -70,8 +70,17 @@ export function serializeAXTreeToMarkdown(
 
   let markdown = '';
 
+  // Guard against cyclic or pathologically deep AX child references. CDP can
+  // list a node as a child of more than one parent (or, defensively, form a
+  // cycle); without this, renderNode would recurse until the stack overflows.
+  const MAX_DEPTH = 1000;
+  const visited = new Set<string>();
+
   function renderNode(tNode: TreeNode, depth: number): void {
     const { node, children } = tNode;
+
+    if (depth > MAX_DEPTH || visited.has(node.nodeId)) return;
+    visited.add(node.nodeId);
 
     if (node.ignored) {
       for (const child of children) renderNode(child, depth);

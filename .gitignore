@@ -148,3 +148,7 @@ vite.config.ts.timestamp-*
 # MCP local diagnostic dumps
 crash_dumps/
 dvr_dumps/
+
+# Local scratch / working dirs
+.invisible/
+recordings/

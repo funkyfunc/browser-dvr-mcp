@@ -9,6 +9,8 @@
 // All buffers are capped ring buffers to prevent unbounded memory growth.
 
 import type { CDPSession, Page } from 'puppeteer-core';
+import type { EventBus, EventKind, Trust } from '../core/EventBus.js';
+import { redactUrl, redactText } from '../security/redaction.js';
 import {
   RingBuffer,
   type NavigationEvent,
@@ -52,16 +54,29 @@ const MUTATION_INJECT_SCRIPT = `
     return id;
   }
 
+  function isSensitiveField(el) {
+    try {
+      var type = (el.type || '').toLowerCase();
+      if (type === 'password') return true;
+      var ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+      if (ac.indexOf('cc-') === 0 || ac === 'current-password' || ac === 'new-password' || ac === 'one-time-code') return true;
+      var hay = ((el.name || '') + ' ' + (el.id || '')).toLowerCase();
+      return /pass|passwd|pwd|card|cvv|cvc|ssn|secret|otp|token/.test(hay);
+    } catch (e) { return true; }
+  }
+
   function attachInputListener(el) {
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
       if (el.__mcp_input_listener_attached) return;
       el.__mcp_input_listener_attached = true;
       el.addEventListener('input', () => {
         const id = getOrAssignId(el);
+        // Redact sensitive values in-page so secrets never reach the Node
+        // process, the agent context, or disk.
         const payload = {
           type: 'input',
           targetId: id,
-          value: el.value,
+          value: isSensitiveField(el) ? '[REDACTED]' : el.value,
           timestamp: Date.now()
         };
         report(payload);
@@ -177,7 +192,12 @@ const MUTATION_INJECT_SCRIPT = `
 let sessionCounter = 0;
 
 export class SessionTelemetryManager {
+  private static readonly MAX_PENDING_REQUESTS = 2000;
+
   private drainInterval: NodeJS.Timeout | null = null;
+  // Pages this telemetry is attached to. Supports multi-tab: one session's
+  // telemetry captures events from every tab it owns without duplicate listeners.
+  private attachedPages = new Set<Page>();
   public readonly id: string;
   public readonly startedAt: number;
   public readonly mode: 'agent' | 'human';
@@ -186,8 +206,10 @@ export class SessionTelemetryManager {
   private networkBuffer = new RingBuffer<NetworkEvent>(5000);
   private consoleBuffer = new RingBuffer<ConsoleEvent>(2000);
   private mutationBuffer = new RingBuffer<MutationEvent>(5000);
-  private interactionLog: InteractionEvent[] = [];
-  private navigationHistory: NavigationEvent[] = [];
+  // Bounded like the other buffers — a long-lived session can otherwise grow
+  // these two without limit (the class contract promises all buffers are capped).
+  private interactionLog = new RingBuffer<InteractionEvent>(5000);
+  private navigationHistory = new RingBuffer<NavigationEvent>(1000);
 
   // Aggregate counters — O(1) reads for summary
   private cumulativeLayoutShift = 0;
@@ -198,12 +220,24 @@ export class SessionTelemetryManager {
   private pendingRequests = new Map<string, { method: string; url: string; timestamp: number }>();
   private requestIdCounter = 0;
   private currentUrl = '';
+  private lastMutationAt = 0;
 
-  constructor(mode: 'agent' | 'human' = 'agent') {
+  // Optional unified timeline. Events are mirrored here with provenance tags in
+  // addition to the category buffers, so the bus is the single trust-aware
+  // stream the causal/replay layer reads from.
+  private readonly eventBus: EventBus | null;
+
+  constructor(mode: 'agent' | 'human' = 'agent', eventBus: EventBus | null = null) {
     sessionCounter++;
     this.id = `sess_${Date.now()}_${sessionCounter}`;
     this.startedAt = Date.now();
     this.mode = mode;
+    this.eventBus = eventBus;
+  }
+
+  /** Mirror an event onto the provenance-tagged bus, if one is attached. */
+  private toBus(kind: EventKind, trust: Trust, data: unknown, timestamp?: number): void {
+    this.eventBus?.emit(kind, trust, data, timestamp);
   }
 
   // ─── CDP Listener Wiring ──────────────────────────────────────────────
@@ -213,6 +247,12 @@ export class SessionTelemetryManager {
    * This is the zero-overhead passive recording layer.
    */
   attachToPage(page: Page): void {
+    // Idempotent per page so re-attaching (or attaching multiple tabs) never
+    // double-registers console/network listeners.
+    if (this.attachedPages.has(page)) return;
+    this.attachedPages.add(page);
+    page.once('close', () => this.attachedPages.delete(page));
+
     // Expose mutation reporting function to the browser
     page
       .exposeFunction('__mcp_report_mutation', (mutation: any) => {
@@ -229,57 +269,58 @@ export class SessionTelemetryManager {
       frame.evaluate(MUTATION_INJECT_SCRIPT).catch(() => {});
     }
 
-    // Set up polling interval to drain mutations from window.__mcp_mutations (fallback)
-    // and layout shifts from window.__mcp_cls
-    if (this.drainInterval) {
-      clearInterval(this.drainInterval);
+    // A single polling interval drains mutations/layout-shifts from ALL attached
+    // pages (multi-tab), created once on first attach.
+    if (!this.drainInterval) {
+      this.drainInterval = setInterval(async () => {
+        for (const p of this.attachedPages) {
+          try {
+            await Promise.all(
+              p.frames().map(async (frame) => {
+                try {
+                  const result = await frame.evaluate(() => {
+                    const win = window as any;
+                    const resMutations = win.__mcp_mutations || [];
+                    win.__mcp_mutations = [];
+                    const resCls = win.__mcp_cls || 0;
+                    win.__mcp_cls = 0;
+                    return { mutations: resMutations, cls: resCls };
+                  });
+                  if (result) {
+                    for (const m of result.mutations) {
+                      this.addMutation(m.type, m.targetId, m);
+                    }
+                    if (result.cls > 0) {
+                      this.addLayoutShift(result.cls);
+                    }
+                  }
+                } catch {
+                  // Ignore frame-specific errors (cross-origin, context destroyed)
+                }
+              }),
+            );
+          } catch {
+            // Page might be closed or navigated
+          }
+        }
+      }, 1000);
     }
-    this.drainInterval = setInterval(async () => {
-      try {
-        const frames = page.frames();
-        await Promise.all(
-          frames.map(async (frame) => {
-            try {
-              const result = await frame.evaluate(() => {
-                const win = window as any;
-                const resMutations = win.__mcp_mutations || [];
-                win.__mcp_mutations = [];
-                const resCls = win.__mcp_cls || 0;
-                win.__mcp_cls = 0;
-                return { mutations: resMutations, cls: resCls };
-              });
-              if (result) {
-                for (const m of result.mutations) {
-                  this.addMutation(m.type, m.targetId, m);
-                }
-                if (result.cls > 0) {
-                  this.addLayoutShift(result.cls);
-                }
-              }
-            } catch {
-              // Ignore frame-specific errors (e.g. cross-origin, context destroyed)
-            }
-          }),
-        );
-      } catch {
-        // Page might be closed or navigated
-      }
-    }, 1000);
 
-    // Console events
+    // Console events (token-shaped secrets scrubbed on ingest)
     page.on('console', (msg) => {
-      this.consoleBuffer.push({
-        level: msg.type(),
-        text: msg.text(),
-        timestamp: Date.now(),
-      });
+      const ts = Date.now();
+      const level = msg.type();
+      const text = redactText(msg.text());
+      this.consoleBuffer.push({ level, text, timestamp: ts });
+      // Console text is authored by the page — untrusted.
+      this.toBus('console', 'page-controlled', { level, text }, ts);
     });
 
     page.on('pageerror', (err: unknown) => {
       this.unhandledExceptionCount++;
       this.consoleBuffer.push({
         level: 'error',
-        text: `Uncaught exception: ${err instanceof Error ? err.message : String(err)}`,
+        text: redactText(`Uncaught exception: ${err instanceof Error ? err.message : String(err)}`),
         timestamp: Date.now(),
       });
     });
@@ -288,15 +329,23 @@ export class SessionTelemetryManager {
     page.on('request', (req) => {
       const reqId = `req-${++this.requestIdCounter}`;
       (req as any).__telemetryReqId = reqId;
+      // Long-lived requests (SSE, websockets, hung fetches) never fire
+      // response/requestfailed, so evict the oldest pending entry once the map
+      // exceeds a sane bound to keep memory (and the pending count) in check.
+      if (this.pendingRequests.size >= SessionTelemetryManager.MAX_PENDING_REQUESTS) {
+        const oldest = this.pendingRequests.keys().next().value;
+        if (oldest !== undefined) this.pendingRequests.delete(oldest);
+      }
+      const reqUrl = redactUrl(req.url());
       this.pendingRequests.set(reqId, {
         method: req.method(),
-        url: req.url(),
+        url: reqUrl,
         timestamp: Date.now(),
       });
       this.networkBuffer.push({
         id: reqId,
         method: req.method(),
-        url: req.url(),
+        url: reqUrl,
         eventType: 'request',
         timestamp: Date.now(),
       });
@@ -312,15 +361,17 @@ export class SessionTelemetryManager {
         this.failedRequestCount++;
       }
 
-      this.networkBuffer.push({
+      const respEvent: NetworkEvent = {
         id: reqId,
         method: res.request().method(),
-        url: res.url(),
+        url: redactUrl(res.url()),
         status: res.status(),
         duration,
         eventType: 'response',
         timestamp: Date.now(),
-      });
+      };
+      this.networkBuffer.push(respEvent);
+      this.toBus('network', 'page-controlled', respEvent, respEvent.timestamp);
     });
 
     page.on('requestfailed', (req) => {
@@ -333,7 +384,7 @@ export class SessionTelemetryManager {
       this.networkBuffer.push({
         id: reqId,
         method: req.method(),
-        url: req.url(),
+        url: redactUrl(req.url()),
         duration,
         eventType: 'failed',
         timestamp: Date.now(),
@@ -347,6 +398,7 @@ export class SessionTelemetryManager {
       clearInterval(this.drainInterval);
       this.drainInterval = null;
     }
+    this.attachedPages.clear();
   }
 
   /**
@@ -364,20 +416,52 @@ export class SessionTelemetryManager {
   // ─── Event Ingestion ──────────────────────────────────────────────────
 
   addNavigation(url: string, statusCode?: number): void {
-    this.currentUrl = url;
-    this.navigationHistory.push({ url, timestamp: Date.now(), statusCode });
+    const safeUrl = redactUrl(url);
+    const ts = Date.now();
+    this.currentUrl = safeUrl;
+    this.navigationHistory.push({ url: safeUrl, timestamp: ts, statusCode });
+    // URL text is page-influenced — tag as page-controlled (untrusted).
+    this.toBus('navigation', 'page-controlled', { url: safeUrl, statusCode }, ts);
+  }
+
+  private interactions(): InteractionEvent[] {
+    return this.interactionLog.toArray();
+  }
+
+  private navigations(): NavigationEvent[] {
+    return this.navigationHistory.toArray();
   }
 
   addMutation(type: string, targetId?: string, details?: unknown): void {
-    this.mutationBuffer.push({ type, timestamp: Date.now(), targetId, details });
+    const ts = Date.now();
+    this.lastMutationAt = ts;
+    this.mutationBuffer.push({ type, timestamp: ts, targetId, details });
+    // Mutation payloads are authored by the page — untrusted.
+    this.toBus('mutation', 'page-controlled', { type, targetId, details }, ts);
+  }
+
+  /** Timestamp of the most recent observed DOM mutation (0 if none yet). */
+  getLastMutationTime(): number {
+    return this.lastMutationAt;
   }
 
   addInteraction(event: InteractionEvent): void {
-    this.interactionLog.push({ ...event, timestamp: event.timestamp || Date.now() });
+    const ts = event.timestamp || Date.now();
+    this.interactionLog.push({ ...event, timestamp: ts });
+    // Interactions are efferent: our tool's output, or a human's when recording.
+    this.toBus('interaction', this.mode === 'human' ? 'user' : 'tool-output', event, ts);
   }
 
   addLayoutShift(value: number): void {
     this.cumulativeLayoutShift += value;
+  }
+
+  /**
+   * Returns the number of currently in-flight (pending) network requests.
+   * Used by the wait-for-condition module to implement the `network_idle` condition.
+   */
+  getPendingRequestCount(): number {
+    return this.pendingRequests.size;
   }
 
   // ─── Layer 2: Progressive Disclosure ──────────────────────────────────
@@ -405,13 +489,12 @@ export class SessionTelemetryManager {
     const structural = allMutations.filter((e) => e.type === 'childList').length;
     const attribute = allMutations.filter((e) => e.type === 'attributes').length;
 
-    const clicks = this.interactionLog.filter((e) => e.type === 'click').length;
-    const typing = this.interactionLog.filter(
-      (e) => e.type === 'type' || e.type === 'input',
-    ).length;
-    const keyPresses = this.interactionLog.filter((e) => e.type === 'keypress').length;
-    const scrolls = this.interactionLog.filter((e) => e.type === 'scroll').length;
-    const hovers = this.interactionLog.filter((e) => e.type === 'hover').length;
+    const allInteractions = this.interactions();
+    const clicks = allInteractions.filter((e) => e.type === 'click').length;
+    const typing = allInteractions.filter((e) => e.type === 'type' || e.type === 'input').length;
+    const keyPresses = allInteractions.filter((e) => e.type === 'keypress').length;
+    const scrolls = allInteractions.filter((e) => e.type === 'scroll').length;
+    const hovers = allInteractions.filter((e) => e.type === 'hover').length;
 
     // JS errors
     const jsErrors = allConsole
@@ -455,7 +538,7 @@ export class SessionTelemetryManager {
       alerts.push(`📐 CLS: ${this.cumulativeLayoutShift.toFixed(3)} (threshold: 0.1)`);
     }
 
-    const pagesVisited = this.navigationHistory.map((n) => {
+    const pagesVisited = this.navigations().map((n) => {
       const statusStr = n.statusCode ? ` (${n.statusCode})` : '';
       return `${this.truncateUrl(n.url)}${statusStr}`;
     });
@@ -496,7 +579,7 @@ export class SessionTelemetryManager {
       case 'interactions':
         return this.drillDownInteractions(filter);
       case 'navigation':
-        return this.navigationHistory;
+        return this.navigations();
       default:
         return {
           error: `Unknown category '${category}'. Valid: network, console, mutations, interactions, navigation`,
@@ -570,17 +653,18 @@ export class SessionTelemetryManager {
   }
 
   private drillDownInteractions(filter?: string): InteractionEvent[] {
-    if (!filter) return this.interactionLog;
+    const all = this.interactions();
+    if (!filter) return all;
 
     switch (filter) {
       case 'clicks':
-        return this.interactionLog.filter((e) => e.type === 'click');
+        return all.filter((e) => e.type === 'click');
       case 'typing':
-        return this.interactionLog.filter((e) => e.type === 'type' || e.type === 'input');
+        return all.filter((e) => e.type === 'type' || e.type === 'input');
       case 'keys':
-        return this.interactionLog.filter((e) => e.type === 'keypress');
+        return all.filter((e) => e.type === 'keypress');
       default:
-        return this.interactionLog;
+        return all;
     }
   }
 
@@ -596,11 +680,11 @@ export class SessionTelemetryManager {
     for (const e of this.consoleBuffer.toArray()) {
       if (e.timestamp >= cutoff) events.push({ type: 'console', timestamp: e.timestamp, data: e });
     }
-    for (const e of this.interactionLog) {
+    for (const e of this.interactions()) {
       if (e.timestamp >= cutoff)
         events.push({ type: 'interaction', timestamp: e.timestamp, data: e });
     }
-    for (const e of this.navigationHistory) {
+    for (const e of this.navigations()) {
       if (e.timestamp >= cutoff)
         events.push({ type: 'navigation', timestamp: e.timestamp, data: e });
     }
@@ -618,11 +702,11 @@ export class SessionTelemetryManager {
         endedAt: Date.now(),
         mode: this.mode,
         currentUrl: this.currentUrl,
-        navigations: this.navigationHistory,
+        navigations: this.navigations(),
         networkEvents: this.networkBuffer.toArray(),
         consoleEvents: this.consoleBuffer.toArray(),
         mutationEvents: this.mutationBuffer.toArray(),
-        interactionEvents: this.interactionLog,
+        interactionEvents: this.interactions(),
       },
       null,
       2,

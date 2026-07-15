@@ -9,7 +9,22 @@
 // assigned by the browser engine and survive VDOM reconciliation — unlike
 // injected data-attributes which React will destroy during re-renders.
 
-import type { NodeSnapshot, StateDelta } from './types.js';
+import type { NodeSnapshot, StateDelta, BoundingBox } from './types.js';
+
+/** Fused geometry/style for a node, keyed by backendNodeId (from DOMSnapshot). */
+export interface NodeGeometry {
+  bounds: BoundingBox;
+  cursor: string;
+  clickable: boolean;
+  visible: boolean;
+}
+
+/** Coerce a primitive AX value to a stable string for snapshotting/diffing. */
+function coerceAXValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'object') return undefined;
+  return String(value);
+}
 
 interface AXNodeRaw {
   nodeId: string;
@@ -35,22 +50,38 @@ export class ImmutableNodeIndex {
 
   private nextStableId = 1;
 
+  // backendNodeIds observed during the current begin/endBuild bracket. Used to
+  // prune nodes that have left the DOM so the index stays bounded and removals
+  // are detectable.
+  private seenThisBuild = new Set<number>();
+  private buildActive = false;
+
   // ─── Build Index from AX Tree ──────────────────────────────────────────
 
   /**
    * Builds the immutable index from a full accessibility tree.
    * Called after initial page load and after major navigations.
    * Nodes that already have stableIds retain them (permanence).
+   *
+   * Nodes absent from `nodes` are pruned so that (a) the index cannot grow
+   * without bound over a long-lived SPA session, and (b) `computeDelta` can
+   * actually detect removals. Stable IDs are still reused for nodes that
+   * survive across builds, preserving object permanence while they are mounted.
+   *
+   * Pruning of departed nodes only happens inside an explicit
+   * `beginBuild()` / `endBuild()` bracket, so a multi-frame page can contribute
+   * every frame's tree before stale nodes are removed. A bare call (no bracket)
+   * stays purely additive — safe for partial/subtree builds like
+   * `getElementTree` that must not wipe the rest of the index.
    */
-  buildFromAXNodes(nodes: AXNodeRaw[]): void {
-    const currentBackendIds = new Set<number>();
+  buildFromAXNodes(nodes: AXNodeRaw[], geometry?: Map<number, NodeGeometry>): void {
     const nodeLookup = new Map<string, AXNodeRaw>(nodes.map((n) => [n.nodeId, n]));
 
     for (const node of nodes) {
       if (node.ignored || !node.backendDOMNodeId) continue;
 
       const backendId = node.backendDOMNodeId;
-      currentBackendIds.add(backendId);
+      this.seenThisBuild.add(backendId);
 
       // If this backendNodeId already has a stableId, keep it (permanence)
       if (!this.nodeMap.has(backendId)) {
@@ -72,18 +103,57 @@ export class ImmutableNodeIndex {
         }
       }
 
+      const geom = geometry?.get(backendId);
       this.snapshotMap.set(stableId, {
         stableId,
         backendNodeId: backendId,
         role: node.role?.value || 'generic',
         name: node.name?.value || '',
-        value: typeof node.value?.value === 'string' ? node.value.value : undefined,
+        // Coerce any primitive AX value (string, number, boolean) to string so
+        // a numeric change (e.g. a slider 0 -> 50) still produces a delta. The
+        // serializer already renders numeric values, so dropping them here made
+        // the semantic surface and the state delta disagree.
+        value: coerceAXValue(node.value?.value),
         properties: node.properties
           ? node.properties.map((p) => ({ name: p.name, value: p.value.value }))
           : undefined,
+        // Fused geometry/style from the single DOMSnapshot (undefined if the
+        // node has no layout box).
+        boundingBox: geom?.bounds,
+        cursor: geom?.cursor,
+        clickable: geom?.clickable,
+        visible: geom?.visible,
         childIds: childStableIds,
       });
     }
+  }
+
+  /**
+   * Opens a build bracket. Subsequent `buildFromAXNodes` calls accumulate their
+   * observed backendNodeIds; call `endBuild()` once all frames have contributed
+   * to prune nodes that have left the DOM.
+   */
+  beginBuild(): void {
+    this.buildActive = true;
+    this.seenThisBuild.clear();
+  }
+
+  /**
+   * Closes a build bracket and prunes every node not observed since the
+   * matching `beginBuild()`, keeping the index bounded and removals detectable.
+   * A no-op if no bracket was opened.
+   */
+  endBuild(): void {
+    if (!this.buildActive) return;
+    for (const backendId of [...this.nodeMap.keys()]) {
+      if (!this.seenThisBuild.has(backendId)) {
+        const stableId = this.nodeMap.get(backendId)!;
+        this.nodeMap.delete(backendId);
+        this.reverseMap.delete(stableId);
+        this.snapshotMap.delete(stableId);
+      }
+    }
+    this.buildActive = false;
   }
 
   // ─── Lookup ────────────────────────────────────────────────────────────
@@ -156,6 +226,11 @@ export class ImmutableNodeIndex {
       if (JSON.stringify(previous.properties) !== JSON.stringify(current.properties)) {
         changes['properties'] = { previous: previous.properties, current: current.properties };
       }
+      // Detect structural reparenting/reordering. Kept in sync with the worker's
+      // computeStateDelta so both serialization paths produce the same delta.
+      if (JSON.stringify(previous.childIds) !== JSON.stringify(current.childIds)) {
+        changes['children'] = { previous: previous.childIds, current: current.childIds };
+      }
 
       if (Object.keys(changes).length > 0) {
         modified.push({ stableId, changes });
@@ -189,5 +264,7 @@ export class ImmutableNodeIndex {
     this.snapshotMap.clear();
     this.previousSnapshot = null;
     this.nextStableId = 1;
+    this.seenThisBuild.clear();
+    this.buildActive = false;
   }
 }

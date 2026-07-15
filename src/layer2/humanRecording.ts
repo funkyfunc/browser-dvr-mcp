@@ -26,13 +26,26 @@ const HUMAN_INTERACTION_TRACKER = `
     });
   }, true);
 
+  function __bbmcpSensitive(el) {
+    try {
+      var type = (el.type || '').toLowerCase();
+      if (type === 'password') return true;
+      var ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+      if (ac.indexOf('cc-') === 0 || ac === 'current-password' || ac === 'new-password' || ac === 'one-time-code') return true;
+      var hay = ((el.name || '') + ' ' + (el.id || '')).toLowerCase();
+      return /pass|passwd|pwd|card|cvv|cvc|ssn|secret|otp|token/.test(hay);
+    } catch (e) { return true; }
+  }
+
   document.addEventListener('input', (e) => {
     const t = e.target;
     const tag = t.tagName ? t.tagName.toLowerCase() : 'unknown';
     const id = t.id ? '#' + t.id : '';
+    // Redact sensitive fields in-page so credentials are never recorded.
+    const val = __bbmcpSensitive(t) ? '[REDACTED]' : (t.value ? t.value.substring(0, 100) : '');
     window.__bbmcp_human_events.push({
       type: 'input', target: tag + id,
-      value: t.value ? t.value.substring(0, 100) : '',
+      value: val,
       timestamp: Date.now()
     });
   }, true);

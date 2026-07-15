@@ -33,7 +33,11 @@ export interface NodeSnapshot {
   name: string;
   value?: string;
   properties?: { name: string; value: unknown }[];
+  // Fused from DOMSnapshot geometry/styles (the "AX spine + layout" model).
   boundingBox?: BoundingBox;
+  cursor?: string;
+  clickable?: boolean;
+  visible?: boolean;
   childIds: number[];
 }
 
@@ -197,6 +201,9 @@ export class RingBuffer<T> {
   private count = 0;
 
   constructor(private readonly capacity: number) {
+    if (!Number.isInteger(capacity) || capacity <= 0) {
+      throw new RangeError(`RingBuffer capacity must be a positive integer, got ${capacity}`);
+    }
     this.buffer = new Array<T>(capacity);
   }
 

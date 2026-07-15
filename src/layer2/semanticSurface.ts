@@ -18,6 +18,19 @@ import type { Page, CDPSession } from 'puppeteer-core';
 import { ImmutableNodeIndex } from '../core/ImmutableNodeIndex.js';
 import type { WorkerBridge } from '../workers/workerBridge.js';
 import { serializeAXTreeToMarkdown, type AXNodeInput } from '../core/treeSerializer.js';
+import {
+  parseSnapshot,
+  renderPrunedMarkdown,
+  type CaptureSnapshotResult,
+  type ParsedSnapshot,
+} from '../perception/domSnapshot.js';
+import type { NodeGeometry } from '../core/ImmutableNodeIndex.js';
+
+/** Read a puppeteer frame's CDP frame id from its (version-dependent) internals. */
+function frameId(frame: any): string | undefined {
+  const id = frame._id ?? frame._frameId ?? frame.id;
+  return typeof id === 'string' ? id : undefined;
+}
 
 export interface SemanticSurfaceResult {
   markdown: string;
@@ -25,153 +38,30 @@ export interface SemanticSurfaceResult {
   frameCount: number;
 }
 
-// ─── Main Entry Point ──────────────────────────────────────────────────────
-
-interface PrunedElement {
-  backendNodeId: number;
-  tag: string;
-  id: string;
-  className: string;
-  cursor: string;
-  text: string;
-}
+// ─── Interactive-candidate capture ──────────────────────────────────────────
 
 /**
- * Identify and collect visible interactive elements pruned from the AX tree.
+ * Capture interactive candidate elements for every frame in a single,
+ * non-mutating DOMSnapshot.captureSnapshot call. Replaces the old per-frame
+ * sniff that ran querySelectorAll('*') + getComputedStyle per element, wrote
+ * temporary data-mcp-sniff attributes, and pulled the whole flattened document
+ * — heavy work that also violated the "do no harm / observer effect" promise by
+ * mutating the page under inspection.
+ *
+ * Returns candidates grouped by frameId (before rendered-node filtering). An
+ * empty map is returned on any failure so perception degrades gracefully.
  */
-async function sniffPrunedInteractiveElements(
-  _page: Page,
-  frame: any,
-  cdpSession: CDPSession,
-  renderedNodeIds: Set<number>,
-): Promise<PrunedElement[]> {
-  const prunedElements: PrunedElement[] = [];
+async function captureFusedSnapshot(cdpSession: CDPSession): Promise<ParsedSnapshot> {
   try {
-    await cdpSession.send('DOM.enable');
-
-    // 1. Mark and extract candidates in page context in one evaluation
-    const candidateDetails = (await frame.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll('*')).filter((el) => {
-        const rect = el.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return false;
-
-        const style = window.getComputedStyle(el);
-        const cursor = style.cursor;
-        const isInteractiveCursor = [
-          'pointer',
-          'grab',
-          'grabbing',
-          'move',
-          'col-resize',
-          'row-resize',
-          'nesw-resize',
-          'nwse-resize',
-          'nw-resize',
-          'ne-resize',
-          'se-resize',
-          'sw-resize',
-        ].includes(cursor);
-
-        const hasInlineHandler =
-          el.hasAttribute('onclick') ||
-          el.hasAttribute('onmousedown') ||
-          el.hasAttribute('onmouseup') ||
-          el.hasAttribute('onpointerdown');
-
-        const classes =
-          el.className && typeof el.className === 'string' ? el.className.toLowerCase() : '';
-        const id = el.id ? el.id.toLowerCase() : '';
-        const hasInteractiveName =
-          classes.includes('btn') ||
-          classes.includes('button') ||
-          classes.includes('handle') ||
-          classes.includes('resize') ||
-          classes.includes('clickable') ||
-          id.includes('btn') ||
-          id.includes('button') ||
-          id.includes('handle') ||
-          id.includes('resize') ||
-          id.includes('clickable');
-
-        const tag = el.tagName.toLowerCase();
-        const isStandardSemantic = ['button', 'a', 'input', 'select', 'textarea'].includes(tag);
-
-        return (
-          isInteractiveCursor || hasInlineHandler || (hasInteractiveName && !isStandardSemantic)
-        );
-      });
-
-      return candidates.map((el, index) => {
-        el.setAttribute('data-mcp-sniff', String(index));
-        const style = window.getComputedStyle(el);
-        const text = el.textContent ? el.textContent.trim().substring(0, 30) : '';
-        const className =
-          el.className && typeof el.className === 'string' ? el.className.trim() : '';
-        return {
-          tag: el.tagName.toLowerCase(),
-          id: el.id || '',
-          className,
-          cursor: style.cursor,
-          text,
-        };
-      });
-    })) as { tag: string; id: string; className: string; cursor: string; text: string }[];
-
-    if (candidateDetails.length === 0) {
-      return prunedElements;
-    }
-
-    // 2. Fetch flattened document from CDP to resolve backendNodeIds in batch
-    const { nodes } = (await cdpSession.send('DOM.getFlattenedDocument', {
-      pierce: false,
-    })) as { nodes: { nodeId: number; backendNodeId: number; attributes?: string[] }[] };
-
-    const getAttribute = (attributes: string[] | undefined, name: string): string | null => {
-      if (!attributes) return null;
-      for (let i = 0; i < attributes.length; i += 2) {
-        if (attributes[i] === name) {
-          return attributes[i + 1];
-        }
-      }
-      return null;
-    };
-
-    // 3. Correlate nodes using the temporary attribute
-    for (const node of nodes) {
-      const sniffIndexStr = getAttribute(node.attributes, 'data-mcp-sniff');
-      if (sniffIndexStr !== null) {
-        const index = parseInt(sniffIndexStr, 10);
-        const details = candidateDetails[index];
-        if (
-          details &&
-          node.backendNodeId !== undefined &&
-          !renderedNodeIds.has(node.backendNodeId)
-        ) {
-          prunedElements.push({
-            backendNodeId: node.backendNodeId,
-            tag: details.tag,
-            id: details.id,
-            className: details.className,
-            cursor: details.cursor,
-            text: details.text,
-          });
-        }
-      }
-    }
-
-    // 4. Cleanup the temporary attribute
-    await frame
-      .evaluate(() => {
-        const elements = Array.from(document.querySelectorAll('[data-mcp-sniff]'));
-        for (const el of elements) {
-          el.removeAttribute('data-mcp-sniff');
-        }
-      })
-      .catch(() => {});
-  } catch (err: any) {
-    // Safe fallback
+    const snapshot = (await cdpSession.send('DOMSnapshot.captureSnapshot', {
+      computedStyles: ['cursor'],
+      includePaintOrder: false,
+      includeDOMRects: false,
+    })) as unknown as CaptureSnapshotResult;
+    return parseSnapshot(snapshot);
+  } catch {
+    return { geometryByFrame: new Map(), candidatesByFrame: new Map() };
   }
-  return prunedElements;
 }
 
 /**
@@ -215,10 +105,19 @@ export async function getSemanticSurface(
     }),
   );
 
-  // Process and serialize them sequentially to preserve order
+  // One non-mutating DOMSnapshot for the whole page yields, in a single pass,
+  // both the per-node geometry (fused onto the AX spine) and the interactive
+  // candidates — replacing the old per-frame page-mutating sniff.
+  const fused = await captureFusedSnapshot(cdpSession);
+
+  // Process and serialize them sequentially to preserve order. The build
+  // bracket spans all frames so departed nodes are pruned only after every
+  // frame has contributed its tree (keeping the index bounded).
+  nodeIndex.beginBuild();
   for (const item of results) {
     if (!item) continue;
     const { frame, isMainFrame, result } = item;
+    const fid = isMainFrame ? frameId(page.mainFrame()) : frameId(frame);
 
     try {
       const nodes = result.nodes as AXNodeInput[];
@@ -228,8 +127,12 @@ export async function getSemanticSurface(
         continue;
       }
 
-      // Update immutable node index with this frame's nodes
-      nodeIndex.buildFromAXNodes(nodes as any[]);
+      // Fuse geometry from the snapshot onto this frame's AX nodes.
+      const frameGeom = fid ? fused.geometryByFrame.get(fid) : undefined;
+      nodeIndex.buildFromAXNodes(
+        nodes as any[],
+        frameGeom as Map<number, NodeGeometry> | undefined,
+      );
 
       // Serialize, tracking rendered nodes in the set
       const renderedNodeIds = new Set<number>();
@@ -259,18 +162,13 @@ export async function getSemanticSurface(
         );
       }
 
-      // Sniff and append pruned non-semantic interactive controls using the frame-specific CDPSession
-      const frameCdp = (frame as any).client || cdpSession;
-      const pruned = await sniffPrunedInteractiveElements(page, frame, frameCdp, renderedNodeIds);
+      // Append pruned non-semantic interactive controls for this frame, drawn
+      // from the same page-wide DOMSnapshot and filtered to those the AX
+      // surface didn't already render.
+      const frameCandidates = (fid ? fused.candidatesByFrame.get(fid) : undefined) ?? [];
+      const pruned = frameCandidates.filter((c) => !renderedNodeIds.has(c.backendNodeId));
       if (pruned.length > 0) {
-        let prunedMd = '\n\n### Pruned Potential Interactive Elements (Non-Semantic)\n';
-        for (const el of pruned) {
-          const classStr = el.className ? `, class: "${el.className}"` : '';
-          const idStr = el.id ? `, id: "${el.id}"` : '';
-          const textStr = el.text ? ` "${el.text}"` : '';
-          prunedMd += `- [${el.tag}]${textStr} (cursor: "${el.cursor}"${classStr}${idStr}) [id: ${el.backendNodeId}]\n`;
-        }
-        markdown += prunedMd;
+        markdown += renderPrunedMarkdown(pruned);
       }
 
       if (markdown && markdown !== '*(Empty accessibility tree)*') {
@@ -288,6 +186,7 @@ export async function getSemanticSurface(
       errors.push(`Frame ${isMainFrame ? '(main)' : frame.url()}: ${msg}`);
     }
   }
+  nodeIndex.endBuild();
 
   // If we got nothing and there were errors, include them in the output
   // so agents can diagnose the problem instead of assuming the page is blank

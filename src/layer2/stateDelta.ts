@@ -28,8 +28,11 @@ export async function getStateDelta(
 ): Promise<{
   text: string;
 }> {
-  // Refresh the node index with the current AX tree state
+  // Refresh the node index with the current AX tree state. The build bracket
+  // spans every frame so nodes removed from the DOM are pruned (and thus
+  // reported as removed) only after all frames have contributed.
   const frames = page.frames();
+  nodeIndex.beginBuild();
   await Promise.all(
     frames.map(async (frame) => {
       const isMainFrame = frame === page.mainFrame();
@@ -50,6 +53,7 @@ export async function getStateDelta(
       }
     }),
   );
+  nodeIndex.endBuild();
 
   // Compute delta against last checkpoint
   let delta: StateDelta | null = null;

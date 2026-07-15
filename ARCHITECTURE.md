@@ -50,19 +50,19 @@ Our telemetry gathering happens silently via passive CDP event listeners. We nev
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│                    MCP Tool Interface (index.ts)                      │
-│         Hyper-descriptive schemas for autonomous agent usage           │
-├─────────────────────────────┬─────────────────────────────────────────┤
-│    Layer 1: Action          │    Layer 2: Perception                  │
-│    Primitives               │    & Telemetry                          │
-│                             │                                         │
-│  • atomic_interact          │  • get_semantic_surface                 │
-│  • evaluate_in_context      │  • get_session_summary                  │
-│  • validate_spatial_coord   │  • query_session_telemetry              │
-│  • coordinate_click         │  • get_state_delta                      │
-│  • stream_screencast        │  • start/stop_human_recording           │
-│  • browser_screenshot       │                                         │
-├─────────────────────────────┴─────────────────────────────────────────┤
+│                     MCP Tool Interface (index.ts)                     │
+│          Hyper-descriptive schemas for autonomous agent usage         │
+├───────────────────────────────┬───────────────────────────────────────┤
+│    Layer 1: Action            │    Layer 2: Perception                │
+│    Primitives                 │    & Telemetry                        │
+│                               │                                       │
+│  • atomic_interact            │  • get_semantic_surface               │
+│  • evaluate_in_context        │  • get_session_summary                │
+│  • validate_spatial_coordinate│  • query_session_telemetry            │
+│  • coordinate_click           │  • get_state_delta                    │
+│  • stream_screencast          │  • start/stop_human_recording         │
+│  • browser_screenshot         │                                       │
+├───────────────────────────────┴───────────────────────────────────────┤
 │                    Core Infrastructure                                │
 │                                                                       │
 │  CDPConnectionManager ─── ImmutableNodeIndex ─── SessionTelemetry     │
