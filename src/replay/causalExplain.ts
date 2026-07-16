@@ -27,11 +27,33 @@ export interface CausalReport {
   mutations: { totalInWindow: number };
   hypotheses: string[];
   summary: string;
+  /** What to actually DO about it (present when the action failed / looks wrong). */
+  remediation?: Remediation;
+}
+
+export interface Remediation {
+  suggestion: string;
+  /** false when retrying is unlikely to help (auth, server error). */
+  retrySafe: boolean;
+  occluderId?: number;
+  nextTool?: string;
+}
+
+/** A known failure recorded for this origin by site memory. */
+export interface KnownGotcha {
+  action: string;
+  reason: string;
 }
 
 const DEFAULT_WINDOW_MS = 1500;
 const PRE_WINDOW_MS = 200; // a little before the action, to catch the blocking state
 const MUTATION_BURST = 15;
+
+/** Best-effort parse of an occluder's backendNodeId out of a failure message. */
+function parseOccluderId(feedback: string): number | undefined {
+  const m = feedback.match(/id:\s*(\d+)/i);
+  return m ? parseInt(m[1], 10) : undefined;
+}
 
 function asAction(e: BusEvent): ActionSummary | null {
   if (e.kind !== 'action') return null;
@@ -52,7 +74,7 @@ function asAction(e: BusEvent): ActionSummary | null {
  */
 export function causalExplain(
   events: BusEvent[],
-  opts: { windowMs?: number; anchorSeq?: number } = {},
+  opts: { windowMs?: number; anchorSeq?: number; knownGotchas?: KnownGotcha[] } = {},
 ): CausalReport {
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
 
@@ -152,6 +174,65 @@ export function causalExplain(
       ? `${action.success ? 'The ' + action.action + ' succeeded, but' : 'The ' + action.action + ' failed;'} ${hypotheses[0]}`
       : `The ${action.action} ${action.success ? 'succeeded' : 'was reported as failed'} and nothing notable happened in the ${windowMs}ms after it (no failed requests, console errors, or large DOM changes).`;
 
+  // ── Prescriptive: turn the diagnosis into a concrete next step ───────────
+  const statuses = networkFailures.map((e) => (e.data as { status?: number }).status ?? 0);
+  const fb = action.feedback.toLowerCase();
+  let remediation: Remediation | undefined;
+
+  if (
+    !action.success &&
+    (fb.includes('occlud') || fb.includes('hit element') || fb.includes('intercept'))
+  ) {
+    const occluderId = parseOccluderId(action.feedback);
+    remediation = {
+      suggestion: `Dismiss the blocking element${occluderId ? ` (id: ${occluderId})` : ''} or press Escape, then retry the ${action.action}.`,
+      retrySafe: true,
+      occluderId,
+      nextTool: 'atomic_interact',
+    };
+  } else if (statuses.some((s) => s === 401 || s === 403)) {
+    remediation = {
+      suggestion:
+        'The action triggered an auth failure (401/403) — you likely need to authenticate before this will work.',
+      retrySafe: false,
+    };
+  } else if (statuses.some((s) => s >= 500)) {
+    remediation = {
+      suggestion:
+        'A server error (5xx) occurred; the failure is server-side, so retrying is unlikely to help.',
+      retrySafe: false,
+    };
+  } else if (action.navOccurred) {
+    remediation = {
+      suggestion:
+        'The page navigated — call get_semantic_surface to re-perceive before continuing.',
+      retrySafe: true,
+      nextTool: 'get_semantic_surface',
+    };
+  } else if (mutationCount >= MUTATION_BURST) {
+    remediation = {
+      suggestion: `The DOM re-rendered (${mutationCount} mutations) — re-fetch the element's id via get_semantic_surface before retrying; it may have moved.`,
+      retrySafe: true,
+      nextTool: 'get_semantic_surface',
+    };
+  } else if (!action.success) {
+    remediation = {
+      suggestion:
+        'Re-perceive with get_semantic_surface and retry; the target may not have been where expected.',
+      retrySafe: true,
+      nextTool: 'get_semantic_surface',
+    };
+  }
+
+  // Fold in what site memory already knows about failures on this action here.
+  const knownFix = opts.knownGotchas?.find((g) => g.action === action.action);
+  if (knownFix) {
+    const note = `Heads up — this site has failed this ${action.action} before: "${knownFix.reason}".`;
+    remediation = remediation
+      ? { ...remediation, suggestion: `${remediation.suggestion} ${note}` }
+      : { suggestion: note, retrySafe: true };
+  }
+
   return {
     action,
     window: { fromMs, toMs },
@@ -160,5 +241,6 @@ export function causalExplain(
     mutations: { totalInWindow: mutationCount },
     hypotheses,
     summary,
+    remediation,
   };
 }

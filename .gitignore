@@ -152,3 +152,4 @@ dvr_dumps/
 # Local scratch / working dirs
 .invisible/
 recordings/
+.bbmcp/

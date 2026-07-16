@@ -55,12 +55,21 @@ import { getStateDelta } from './layer2/stateDelta.js';
 import { causalExplain } from './replay/causalExplain.js';
 import { ReplayEngine } from './replay/ReplayEngine.js';
 
+// Next-level: durable per-origin site memory + eval scenarios
+import { SiteMemory } from './memory/SiteMemory.js';
+import { JsonStore } from './persistence/store.js';
+import { runScenario, type Scenario, type Assertion } from './eval/Scenario.js';
+
 // ─── Process-level singletons ───────────────────────────────────────────────
 // These are genuinely one-per-process: the browser lifecycle owner, the human
 // recording flow, and the (optional) serialization worker.
 
 const connectionManager = new CDPConnectionManager();
 const humanRecording = new HumanRecordingManager(connectionManager);
+// Site memory persists across sessions, so it is process-level and re-attaches
+// to each new session's event bus on launch.
+const siteMemory = new SiteMemory();
+const scenarioStore = new JsonStore<Scenario>('scenarios');
 
 // WorkerBridge is optional — it's only used for DVR frame buffering (screencast).
 // In production builds (esbuild --bundle), the worker file doesn't exist as a
@@ -464,6 +473,8 @@ server.registerTool(
     // Fresh session — tears down any previous one first so a relaunch never
     // leaks the prior telemetry drain interval or a running screencast.
     const sess = await registry.reset();
+    // Re-attach durable site memory to this session's event bus.
+    siteMemory.attach(sess.eventBus);
 
     // Initialize telemetry, mirroring events onto the session's provenance bus.
     const telemetry = new SessionTelemetryManager('agent', sess.eventBus);
@@ -525,6 +536,8 @@ server.registerTool(
       'Close the active browser session and release all resources. Stops any active screencast or recording.',
   },
   async () => {
+    // Persist what we learned about the site before tearing everything down.
+    await siteMemory.flush().catch(() => {});
     workerBridge?.clearBuffers();
     // teardown() stops any recording/screencast, destroys telemetry, clears the
     // node index and the interception handler, and resets history bookkeeping.
@@ -1125,6 +1138,17 @@ server.registerTool(
       feedback += `\n\n### Wait Condition Result\n${waitResult.met ? '✓' : '✗'} ${waitResult.details}`;
     }
 
+    // The target's semantic identity (role/accessible name) — a stable landmark
+    // for site memory, unlike the backendNodeId which resets each session.
+    let targetRole: string | undefined;
+    let targetName: string | undefined;
+    if (backendNodeId !== undefined) {
+      const stableId = session().nodeIndex.getStableId(backendNodeId);
+      const snap = stableId !== undefined ? session().nodeIndex.getSnapshot(stableId) : undefined;
+      targetRole = snap?.role;
+      targetName = snap?.name || undefined;
+    }
+
     // Record this action on the provenance timeline so the causal explainer can
     // anchor "what happened after my last action" on it (feedback may echo typed
     // text, so redact before storing).
@@ -1138,6 +1162,8 @@ server.registerTool(
         // Resolved viewport coordinates make the action replayable even though
         // backendNodeIds are not stable across sessions.
         coordinates: result?.coordinates,
+        targetRole,
+        targetName,
         text: action === 'type' && text ? redactText(text) : undefined,
         success: result?.success ?? true,
         navOccurred,
@@ -3174,8 +3200,13 @@ server.registerTool(
     },
   },
   async ({ windowMs }) => {
-    requireSession();
-    const report = causalExplain(session().eventBus.recent(), { windowMs });
+    const { page } = requireSession();
+    // Fold in what site memory already knows about this origin's failures.
+    const known = await siteMemory.recall(page.url()).catch(() => undefined);
+    const report = causalExplain(session().eventBus.recent(), {
+      windowMs,
+      knownGotchas: known?.gotchas,
+    });
     return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
   },
 );
@@ -3344,6 +3375,130 @@ server.registerTool(
 
     const report = await ReplayEngine.replay(bundle, driver);
     return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  'browser_recall_site',
+  {
+    description:
+      'SITE MEMORY. Recall what has been learned about the current origin across previous sessions: reusable ' +
+      'element landmarks (role + accessible name), successful action flows, and gotchas (regions where clicks ' +
+      'were blocked before). Call this right after navigating to a site you may have visited before, so you ' +
+      'start already knowing its structure instead of re-deriving it. Returns null if the origin is new.',
+  },
+  async () => {
+    const { page } = requireSession();
+    const model = await siteMemory.recall(page.url());
+    return {
+      content: [
+        {
+          type: 'text',
+          text: model
+            ? JSON.stringify(model, null, 2)
+            : 'No prior memory for this origin (first visit).',
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_save_scenario',
+  {
+    description:
+      'EVAL / REGRESSION. Save the current session as a named, replayable scenario: the recorded action bundle ' +
+      'plus end-state assertions ("text Order confirmed is visible", "url contains /success"). Later, ' +
+      'browser_run_scenario replays it and checks the assertions — a regression test for whether the agent can ' +
+      'still complete the flow after a deploy.',
+    inputSchema: {
+      name: z.string().describe('A name for the scenario (e.g. "checkout-happy-path").'),
+      assertions: z
+        .array(
+          z.object({
+            type: z.enum([
+              'selector',
+              'selector_hidden',
+              'text',
+              'text_hidden',
+              'url',
+              'network_idle',
+              'predicate',
+            ]),
+            value: z.string().optional(),
+            durationMs: z.number().optional(),
+          }),
+        )
+        .describe('End-state assertions to verify after the scenario replays.'),
+    },
+  },
+  async ({ name, assertions }) => {
+    requireSession();
+    const bundle = ReplayEngine.record(session().eventBus.recent());
+    const scenario: Scenario = {
+      name,
+      createdAt: Date.now(),
+      bundle,
+      assertions: assertions as Assertion[],
+    };
+    await scenarioStore.write(name, scenario);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Saved scenario "${name}" (${bundle.actions.length} action(s), ${assertions.length} assertion(s)).`,
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_run_scenario',
+  {
+    description:
+      'Replay a saved scenario and check its assertions — a pass/fail regression run. Returns replay coverage ' +
+      '(which steps replayed vs. skipped) and each assertion result.',
+    inputSchema: {
+      name: z.string().describe('The scenario name to run.'),
+    },
+  },
+  async ({ name }) => {
+    requireSession();
+    const scenario = await scenarioStore.read(name);
+    if (!scenario) {
+      throw new Error(`No scenario named "${name}". Save one with browser_save_scenario first.`);
+    }
+
+    const driver = {
+      navigate: (url: string) => connectionManager.navigate(url),
+      clickAt: async (x: number, y: number) => {
+        const { page, cdp } = requireSession();
+        return coordinateClick(page, cdp, x, y, requireTelemetry());
+      },
+      typeAt: async (x: number, y: number, replayText: string) => {
+        const { page, cdp } = requireSession();
+        await coordinateClick(page, cdp, x, y, requireTelemetry());
+        await cdp.send('Input.insertText', { text: replayText });
+      },
+    };
+
+    const result = await runScenario(scenario, {
+      replay: (bundle) => ReplayEngine.replay(bundle, driver),
+      check: async (assertion) => {
+        const { page, cdp } = requireSession();
+        const r = await waitForCondition(
+          page,
+          cdp,
+          requireTelemetry(),
+          assertion as WaitCondition,
+          5000,
+        );
+        return { met: r.met, details: r.details };
+      },
+    });
+
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   },
 );
 

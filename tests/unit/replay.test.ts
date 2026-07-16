@@ -107,6 +107,68 @@ describe('causalExplain', () => {
   });
 });
 
+describe('causalExplain — prescriptive remediation', () => {
+  it('suggests dismissing the occluder and parses its id', () => {
+    reset();
+    const report = causalExplain([
+      ev(
+        'action',
+        'tool-output',
+        {
+          action: 'click',
+          success: false,
+          feedback: 'Spatial validation failed. Interaction hit element (id: 77) instead.',
+        },
+        1000,
+      ),
+    ]);
+    expect(report.remediation?.suggestion.toLowerCase()).toContain('dismiss');
+    expect(report.remediation?.occluderId).toBe(77);
+    expect(report.remediation?.retrySafe).toBe(true);
+  });
+
+  it('flags auth failures as not retry-safe', () => {
+    reset();
+    const t = 2000;
+    const report = causalExplain([
+      ev('action', 'tool-output', { action: 'click', success: true, feedback: 'Clicked.' }, t),
+      ev('network', 'page-controlled', { method: 'POST', url: '/api/x', status: 403 }, t + 100),
+    ]);
+    expect(report.remediation?.retrySafe).toBe(false);
+    expect(report.remediation?.suggestion.toLowerCase()).toContain('auth');
+  });
+
+  it('tells the agent to re-perceive after a navigation', () => {
+    reset();
+    const report = causalExplain([
+      ev(
+        'action',
+        'tool-output',
+        { action: 'click', success: true, feedback: 'Clicked.', navOccurred: true },
+        3000,
+      ),
+    ]);
+    expect(report.remediation?.nextTool).toBe('get_semantic_surface');
+  });
+
+  it('folds in a known gotcha from site memory', () => {
+    reset();
+    const report = causalExplain(
+      [ev('action', 'tool-output', { action: 'click', success: false, feedback: 'nope' }, 1)],
+      { knownGotchas: [{ action: 'click', reason: 'modal blocks this region' }] },
+    );
+    expect(report.remediation?.suggestion).toContain('modal blocks this region');
+  });
+
+  it('leaves remediation undefined for a clean successful action', () => {
+    reset();
+    const report = causalExplain([
+      ev('action', 'tool-output', { action: 'hover', success: true, feedback: 'Hovered.' }, 1),
+    ]);
+    expect(report.remediation).toBeUndefined();
+  });
+});
+
 describe('ReplayEngine', () => {
   it('records actions, navigations, and network failures into a bundle', () => {
     reset();
