@@ -114,7 +114,7 @@ export async function getSemanticSurface(
   // bracket spans all frames so departed nodes are pruned only after every
   // frame has contributed its tree (keeping the index bounded).
   nodeIndex.beginBuild();
-  for (const item of results) {
+  for (const [frameIndex, item] of results.entries()) {
     if (!item) continue;
     const { frame, isMainFrame, result } = item;
     const fid = isMainFrame ? frameId(page.mainFrame()) : frameId(frame);
@@ -176,7 +176,11 @@ export async function getSemanticSurface(
         if (isMainFrame) {
           combinedMarkdown += markdown + '\n';
         } else {
-          combinedMarkdown += `\n--- iframe: ${frameUrl} ---\n${markdown}\n`;
+          // Emit the frames() index so agents know the exact frameIndex arg to
+          // pass to atomic_interact / evaluate_in_context when targeting this
+          // iframe. `results` is frames.map(...), so this index is aligned with
+          // page.frames() — the same list those tools index into.
+          combinedMarkdown += `\n--- iframe [frameIndex: ${frameIndex}]: ${frameUrl} ---\n${markdown}\n`;
         }
         totalNodeCount += nodes.length + pruned.length;
         frameCount++;

@@ -700,6 +700,22 @@ server.registerTool(
 // LAYER 1: ACTION PRIMITIVES
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * Prescriptive error for when an interaction is called without a usable locator.
+ * Weaker agents guess shapes like `{target:{text:"..."}}` or `{selector:"..."}`;
+ * atomic_interact deliberately takes only a top-level `backendNodeId` (stable
+ * across re-renders) or a raw `coordinate`. Point them at the fix instead of
+ * just restating the requirement.
+ */
+function locatorError(action: string): Error {
+  return new Error(
+    `${action} needs a locator, but none was given. Pass a top-level "backendNodeId" ` +
+      `(the [id: NNN] tag from get_semantic_surface — preferred, survives re-renders) ` +
+      `or a "coordinate" [x, y]. This tool does NOT accept "selector", "text", or a ` +
+      `nested "target" object; call get_semantic_surface first to read the element's id.`,
+  );
+}
+
 server.registerTool(
   'atomic_interact',
   {
@@ -969,7 +985,7 @@ server.registerTool(
             force,
           });
         } else {
-          throw new Error('click requires either backendNodeId or coordinate.');
+          throw locatorError('click');
         }
         break;
 
@@ -1007,7 +1023,7 @@ server.registerTool(
             feedback: `Typed "${text.substring(0, 30)}" at (${coordinate[0]}, ${coordinate[1]}).`,
           };
         } else {
-          throw new Error('type requires either backendNodeId or coordinate.');
+          throw locatorError('type');
         }
         break;
 
@@ -1044,7 +1060,7 @@ server.registerTool(
             feedback: `Hovered at (${coordinate[0]}, ${coordinate[1]}).`,
           };
         } else {
-          throw new Error('hover requires either backendNodeId or coordinate.');
+          throw locatorError('hover');
         }
         break;
 
@@ -1083,7 +1099,7 @@ server.registerTool(
           }
           startPt = validation.coordinates;
         } else {
-          throw new Error('drag_and_drop requires either backendNodeId or coordinate.');
+          throw locatorError('drag_and_drop');
         }
 
         // Resolve end point:
