@@ -59,6 +59,9 @@ import { ReplayEngine } from './replay/ReplayEngine.js';
 import { SiteMemory } from './memory/SiteMemory.js';
 import { JsonStore } from './persistence/store.js';
 import { runScenario, type Scenario, type Assertion } from './eval/Scenario.js';
+// Validation-gated active-memory loop: skills = flows on probation, admitted to
+// trusted memory only after their probe passes against the live site.
+import { SkillRegistry } from './memory/SkillRegistry.js';
 
 // ─── Process-level singletons ───────────────────────────────────────────────
 // These are genuinely one-per-process: the browser lifecycle owner, the human
@@ -70,6 +73,7 @@ const humanRecording = new HumanRecordingManager(connectionManager);
 // to each new session's event bus on launch.
 const siteMemory = new SiteMemory();
 const scenarioStore = new JsonStore<Scenario>('scenarios');
+const skillRegistry = new SkillRegistry();
 
 // WorkerBridge is optional — it's only used for DVR frame buffering (screencast).
 // In production builds (esbuild --bundle), the worker file doesn't exist as a
@@ -3399,25 +3403,61 @@ server.registerTool(
   {
     description:
       'SITE MEMORY. Recall what has been learned about the current origin across previous sessions: reusable ' +
-      'element landmarks (role + accessible name), successful action flows, and gotchas (regions where clicks ' +
-      'were blocked before). Call this right after navigating to a site you may have visited before, so you ' +
-      'start already knowing its structure instead of re-deriving it. Returns null if the origin is new.',
+      'element landmarks (role + accessible name), successful action flows, gotchas (regions where clicks ' +
+      'were blocked before), and TRUSTED SKILLS — flows that passed their validation gate and can be replayed ' +
+      'with confidence. Call this right after navigating to a site you may have visited before, so you start ' +
+      'already knowing its structure instead of re-deriving it. Returns null if the origin is new.',
   },
   async () => {
     const { page } = requireSession();
     const model = await siteMemory.recall(page.url());
+    const admittedSkills = await skillRegistry.list(page.url(), 'admitted');
+    const trustedSkills = admittedSkills.map((s) => ({
+      name: s.name,
+      actions: s.bundle.actions.length,
+      probe: s.assertions,
+      passes: s.passes,
+    }));
+    if (!model && trustedSkills.length === 0) {
+      return {
+        content: [{ type: 'text', text: 'No prior memory for this origin (first visit).' }],
+      };
+    }
     return {
       content: [
         {
           type: 'text',
-          text: model
-            ? JSON.stringify(model, null, 2)
-            : 'No prior memory for this origin (first visit).',
+          text: JSON.stringify({ ...(model ?? {}), trustedSkills }, null, 2),
         },
       ],
     };
   },
 );
+
+// Shared live-browser plumbing for replaying a bundle and checking an assertion
+// against the current session — used by both scenario runs and skill validation.
+function liveReplayDriver() {
+  return {
+    navigate: (url: string) => connectionManager.navigate(url),
+    clickAt: async (x: number, y: number) => {
+      const { page, cdp } = requireSession();
+      return coordinateClick(page, cdp, x, y, requireTelemetry());
+    },
+    typeAt: async (x: number, y: number, replayText: string) => {
+      const { page, cdp } = requireSession();
+      await coordinateClick(page, cdp, x, y, requireTelemetry());
+      await cdp.send('Input.insertText', { text: replayText });
+    },
+  };
+}
+
+async function liveAssertionCheck(
+  assertion: Assertion,
+): Promise<{ met: boolean; details: string }> {
+  const { page, cdp } = requireSession();
+  const r = await waitForCondition(page, cdp, requireTelemetry(), assertion as WaitCondition, 5000);
+  return { met: r.met, details: r.details };
+}
 
 server.registerTool(
   'browser_save_scenario',
@@ -3486,35 +3526,161 @@ server.registerTool(
       throw new Error(`No scenario named "${name}". Save one with browser_save_scenario first.`);
     }
 
-    const driver = {
-      navigate: (url: string) => connectionManager.navigate(url),
-      clickAt: async (x: number, y: number) => {
-        const { page, cdp } = requireSession();
-        return coordinateClick(page, cdp, x, y, requireTelemetry());
-      },
-      typeAt: async (x: number, y: number, replayText: string) => {
-        const { page, cdp } = requireSession();
-        await coordinateClick(page, cdp, x, y, requireTelemetry());
-        await cdp.send('Input.insertText', { text: replayText });
-      },
-    };
-
+    const driver = liveReplayDriver();
     const result = await runScenario(scenario, {
       replay: (bundle) => ReplayEngine.replay(bundle, driver),
-      check: async (assertion) => {
-        const { page, cdp } = requireSession();
-        const r = await waitForCondition(
-          page,
-          cdp,
-          requireTelemetry(),
-          assertion as WaitCondition,
-          5000,
-        );
-        return { met: r.met, details: r.details };
-      },
+      check: liveAssertionCheck,
     });
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// ─── Validation-gated active-memory loop ────────────────────────────────────
+// propose a flow as a candidate SKILL -> validate it against the live site ->
+// it only enters trusted, recall-able memory if its probe passes. Drifted
+// admitted skills are demoted to stale and become gotchas. This is what turns
+// per-session perception into comprehension that COMPOUNDS across sessions —
+// and, unlike a replay cache, never trusts a flow it hasn't re-proven.
+
+server.registerTool(
+  'browser_propose_skill',
+  {
+    description:
+      'ACTIVE MEMORY (step 1 of 2). Propose the current session as a candidate SKILL for this origin: a reusable ' +
+      'flow (the recorded action bundle) plus an end-state probe that defines success ("text Order placed is ' +
+      'visible"). A candidate is NOT trusted yet — it is quarantined until browser_validate_skill replays it ' +
+      'against the live site and its probe passes. This is how the agent learns a flow WITHOUT blindly trusting it.',
+    inputSchema: {
+      name: z.string().describe('A name for the skill (e.g. "add-to-cart").'),
+      assertions: z
+        .array(
+          z.object({
+            type: z.enum([
+              'selector',
+              'selector_hidden',
+              'text',
+              'text_hidden',
+              'url',
+              'network_idle',
+              'predicate',
+            ]),
+            value: z.string().optional(),
+            durationMs: z.number().optional(),
+          }),
+        )
+        .describe('The end-state probe. A skill with no assertions can never be admitted.'),
+    },
+  },
+  async ({ name, assertions }) => {
+    const { page } = requireSession();
+    const bundle = ReplayEngine.record(session().eventBus.recent());
+    const skill = await skillRegistry.propose(
+      page.url(),
+      name,
+      bundle,
+      assertions as Assertion[],
+      Date.now(),
+    );
+    if (!skill) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'Skill memory is disabled (BROWSER_MCP_NO_MEMORY=1); nothing proposed.',
+          },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Proposed candidate skill "${name}" (${bundle.actions.length} action(s), ${assertions.length} probe assertion(s)). ` +
+            `It is NOT yet trusted — run browser_validate_skill({ name: "${name}" }) to gate it into memory.`,
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_validate_skill',
+  {
+    description:
+      'ACTIVE MEMORY (step 2 of 2) — THE GATE. Replay a candidate skill against the LIVE site and check its ' +
+      'probe. Admit it to trusted site memory ONLY if the probe fully passes. At the same time, re-check every ' +
+      'already-admitted skill for this origin: any whose probe now fails (the site drifted) is demoted to STALE ' +
+      'and recorded as a gotcha. This is validated learning — the thing a replay cache cannot do. Returns the ' +
+      'admit/reject decision, the probe results, and any peer regressions.',
+    inputSchema: {
+      name: z.string().describe('The candidate skill name to validate.'),
+    },
+  },
+  async ({ name }) => {
+    const { page } = requireSession();
+    const driver = liveReplayDriver();
+    const outcome = await skillRegistry.validate(page.url(), name, {
+      replay: (bundle) => ReplayEngine.replay(bundle, driver),
+      check: liveAssertionCheck,
+      now: () => Date.now(),
+    });
+    // Fold negative knowledge back into site memory so prescriptive explain sees it.
+    for (const g of outcome.gotchas) {
+      await siteMemory.recordGotcha(page.url(), g).catch(() => {});
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              admitted: outcome.decision.admit,
+              status: outcome.skill.status,
+              reason: outcome.decision.reason,
+              probe: outcome.candidate.assertions,
+              peerRegressions: outcome.decision.peerRegressions,
+              trials: outcome.skill.trials,
+              passes: outcome.skill.passes,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_list_skills',
+  {
+    description:
+      'List the skills learned for the current origin and their status: "candidate" (proposed, not yet gated), ' +
+      '"admitted" (probe passed — trusted), "stale" (was admitted but the site drifted), or "rejected". Use this ' +
+      'to see which flows you can trust to replay.',
+    inputSchema: {
+      status: z
+        .enum(['candidate', 'admitted', 'stale', 'rejected'])
+        .optional()
+        .describe('Only list skills with this status.'),
+    },
+  },
+  async ({ status }) => {
+    const { page } = requireSession();
+    const skills = await skillRegistry.list(page.url(), status);
+    const summary = skills.map((s) => ({
+      name: s.name,
+      status: s.status,
+      actions: s.bundle.actions.length,
+      assertions: s.assertions.length,
+      trials: s.trials,
+      passes: s.passes,
+      lastReason: s.history.at(-1)?.reason,
+    }));
+    // Always JSON (an empty array) so agents can parse the result uniformly.
+    return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
   },
 );
 

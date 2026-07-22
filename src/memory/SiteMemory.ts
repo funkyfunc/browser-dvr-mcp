@@ -173,4 +173,21 @@ export class SiteMemory {
     if (!this.enabled) return undefined;
     return this.store.read(originKey(url));
   }
+
+  /**
+   * Merge an externally-derived gotcha (e.g. a skill that failed its validation
+   * gate) into the origin's model, so prescriptive explain surfaces it. Deduped
+   * by action+reason; capped like distilled gotchas.
+   */
+  async recordGotcha(url: string, gotcha: Gotcha): Promise<void> {
+    if (!this.enabled) return;
+    const origin = originKey(url);
+    await this.store.merge(origin, (existing) => {
+      const model = existing ?? emptyModel(origin, Date.now());
+      const key = `${gotcha.action}|${gotcha.reason}`;
+      const map = new Map(model.gotchas.map((g) => [`${g.action}|${g.reason}`, g]));
+      map.set(key, gotcha);
+      return { ...model, gotchas: [...map.values()].slice(-CAP.gotchas) };
+    });
+  }
 }
