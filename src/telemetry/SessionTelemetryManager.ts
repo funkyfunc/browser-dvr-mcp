@@ -10,7 +10,7 @@
 
 import type { CDPSession, Page } from 'puppeteer-core';
 import type { EventBus, EventKind, Trust } from '../core/EventBus.js';
-import { redactUrl, redactText } from '../security/redaction.js';
+import { redactUrl, redactText, redactHeaders } from '../security/redaction.js';
 import {
   RingBuffer,
   type NavigationEvent,
@@ -342,10 +342,21 @@ export class SessionTelemetryManager {
         url: reqUrl,
         timestamp: Date.now(),
       });
+      // HAR-grade context: resourceType + redacted request headers.
+      let requestHeaders: Record<string, string> | undefined;
+      let resourceType: string | undefined;
+      try {
+        requestHeaders = redactHeaders(req.headers());
+        resourceType = req.resourceType();
+      } catch {
+        /* best-effort */
+      }
       this.networkBuffer.push({
         id: reqId,
         method: req.method(),
         url: reqUrl,
+        resourceType,
+        requestHeaders,
         eventType: 'request',
         timestamp: Date.now(),
       });
@@ -361,12 +372,33 @@ export class SessionTelemetryManager {
         this.failedRequestCount++;
       }
 
+      // HAR-grade context: redacted response headers, resourceType, mime, size.
+      let responseHeaders: Record<string, string> | undefined;
+      let resourceType: string | undefined;
+      let mimeType: string | undefined;
+      let size: number | undefined;
+      try {
+        const headers = res.headers();
+        responseHeaders = redactHeaders(headers);
+        resourceType = res.request().resourceType();
+        const ct = headers['content-type'];
+        if (ct) mimeType = ct.split(';')[0].trim();
+        const cl = headers['content-length'];
+        if (cl && /^\d+$/.test(cl)) size = parseInt(cl, 10);
+      } catch {
+        /* best-effort */
+      }
+
       const respEvent: NetworkEvent = {
         id: reqId,
         method: res.request().method(),
         url: redactUrl(res.url()),
         status: res.status(),
         duration,
+        size,
+        resourceType,
+        mimeType,
+        responseHeaders,
         eventType: 'response',
         timestamp: Date.now(),
       };

@@ -74,6 +74,10 @@ export interface NetworkEvent {
   duration?: number;
   size?: number;
   resourceType?: string;
+  mimeType?: string;
+  /** Request/response headers, with sensitive ones redacted (HAR-grade context). */
+  requestHeaders?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
   eventType: 'request' | 'response' | 'failed';
   timestamp: number;
   errorText?: string;
