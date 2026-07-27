@@ -15,7 +15,7 @@ import fs from 'fs';
 // dedicated security module (and is unit-tested there in isolation).
 export { resolveSafePath, outputBaseDir } from './security/resolvePath.js';
 import { resolveSafePath } from './security/resolvePath.js';
-import { redactText } from './security/redaction.js';
+import { redactText, isSensitiveField, redactUrl } from './security/redaction.js';
 
 import { CDPConnectionManager } from './core/CDPConnectionManager.js';
 import { SessionRegistry } from './core/SessionRegistry.js';
@@ -62,6 +62,10 @@ import { runScenario, type Scenario, type Assertion } from './eval/Scenario.js';
 // Validation-gated active-memory loop: skills = flows on probation, admitted to
 // trusted memory only after their probe passes against the live site.
 import { SkillRegistry } from './memory/SkillRegistry.js';
+// Time Machine: a durable, scrubbable flight recorder of the whole session.
+import { SessionArchiveStore } from './timemachine/SessionArchiveStore.js';
+import { SessionRecorder, type CaptureDeps } from './timemachine/SessionRecorder.js';
+import { TimeMachine, type SessionArchive } from './timemachine/SessionArchive.js';
 
 // ─── Process-level singletons ───────────────────────────────────────────────
 // These are genuinely one-per-process: the browser lifecycle owner, the human
@@ -74,6 +78,10 @@ const humanRecording = new HumanRecordingManager(connectionManager);
 const siteMemory = new SiteMemory();
 const scenarioStore = new JsonStore<Scenario>('scenarios');
 const skillRegistry = new SkillRegistry();
+const sessionArchiveStore = new SessionArchiveStore();
+const sessionRecorder = new SessionRecorder(sessionArchiveStore);
+// A past session archive loaded for time-travel (null → timetravel uses the live session).
+let loadedSessionArchive: SessionArchive | null = null;
 
 // WorkerBridge is optional — it's only used for DVR frame buffering (screencast).
 // In production builds (esbuild --bundle), the worker file doesn't exist as a
@@ -479,6 +487,12 @@ server.registerTool(
     const sess = await registry.reset();
     // Re-attach durable site memory to this session's event bus.
     siteMemory.attach(sess.eventBus);
+    // Attach the Time Machine recorder so it buffers the full timeline from the
+    // very first event; keyframe capture starts once the screencast is live.
+    const sessionId = `sess_${Date.now()}`;
+    sessionRecorder.attach(sess.eventBus, sessionId, url);
+    // A new live session supersedes any past archive loaded for time-travel.
+    loadedSessionArchive = null;
 
     // Initialize telemetry, mirroring events onto the session's provenance bus.
     const telemetry = new SessionTelemetryManager('agent', sess.eventBus);
@@ -504,6 +518,13 @@ server.registerTool(
       await screencast.start();
     } catch (err) {
       console.error('Screencast start failed (non-fatal):', err);
+    }
+
+    // Begin periodic keyframe capture for the flight recorder (non-fatal).
+    try {
+      sessionRecorder.start(liveCaptureDeps());
+    } catch (err) {
+      console.error('Session recorder start failed (non-fatal):', err);
     }
 
     // Auto track history setup
@@ -542,6 +563,10 @@ server.registerTool(
   async () => {
     // Persist what we learned about the site before tearing everything down.
     await siteMemory.flush().catch(() => {});
+    // Stop keyframe capture and durably archive the session so it can be
+    // re-opened and scrubbed later (the flight recorder's black box).
+    sessionRecorder.stop();
+    await sessionRecorder.save(Date.now()).catch(() => {});
     workerBridge?.clearBuffers();
     // teardown() stops any recording/screencast, destroys telemetry, clears the
     // node index and the interception handler, and resets history bookkeeping.
@@ -3434,6 +3459,59 @@ server.registerTool(
   },
 );
 
+// Live-browser capture functions for the Time Machine recorder. Each grab is
+// best-effort and returns null on any failure (the recorder never throws). All
+// captured text is redacted; sensitive storage keys have their values dropped.
+function liveCaptureDeps(): CaptureDeps {
+  return {
+    grabFrame: async () => {
+      const frame = session().screencast?.getLatestFrame();
+      if (!frame?.data) return null;
+      return { base64: frame.data };
+    },
+    grabStorage: async () => {
+      const { page } = requireSession();
+      const raw = await page.evaluate(() => {
+        const dump = (s: Storage) => {
+          const out: Record<string, string> = {};
+          for (let i = 0; i < s.length; i++) {
+            const k = s.key(i);
+            if (k !== null) out[k] = s.getItem(k) ?? '';
+          }
+          return out;
+        };
+        return {
+          localStorage: dump(window.localStorage),
+          sessionStorage: dump(window.sessionStorage),
+        };
+      });
+      const redactStore = (o: Record<string, string>) => {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(o)) {
+          out[k] = isSensitiveField({ name: k }) ? '[REDACTED]' : redactText(v);
+        }
+        return out;
+      };
+      const cookies = await page.cookies().catch(() => []);
+      return {
+        localStorage: redactStore(raw.localStorage),
+        sessionStorage: redactStore(raw.sessionStorage),
+        cookies: cookies.map((c) => ({
+          name: c.name,
+          value: isSensitiveField({ name: c.name }) ? '[REDACTED]' : redactText(c.value),
+          domain: c.domain,
+        })),
+      };
+    },
+    grabState: async () => {
+      const { page } = requireSession();
+      const title = await page.title().catch(() => undefined);
+      return { url: redactUrl(page.url()), title };
+    },
+    now: () => Date.now(),
+  };
+}
+
 // Shared live-browser plumbing for replaying a bundle and checking an assertion
 // against the current session — used by both scenario runs and skill validation.
 function liveReplayDriver() {
@@ -3681,6 +3759,156 @@ server.registerTool(
     }));
     // Always JSON (an empty array) so agents can parse the result uniformly.
     return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+  },
+);
+
+// ─── Time Machine ───────────────────────────────────────────────────────────
+// A durable, scrubbable flight recorder. The live session is recorded
+// continuously (event timeline + visual/storage/state keyframes); save it to
+// re-open later, and timetravel to reconstruct EVERYTHING as it was at any
+// moment. See docs/TIME_MACHINE.md.
+
+server.registerTool(
+  'browser_save_session',
+  {
+    description:
+      'TIME MACHINE. Durably save the current session as a replayable archive — the full provenance-tagged ' +
+      'event timeline plus periodic visual/storage/state keyframes — so you (or a later session) can re-open and ' +
+      'scrub it. Sessions are also auto-saved on browser_close; use this to snapshot mid-session or name it.',
+    inputSchema: {
+      name: z.string().optional().describe('Optional human-friendly name for the session.'),
+    },
+  },
+  async ({ name }) => {
+    requireSession();
+    // Capture a final keyframe so the saved archive reflects the current moment.
+    await sessionRecorder.captureKeyframe(liveCaptureDeps()).catch(() => {});
+    const archive = await sessionRecorder.save(Date.now(), name);
+    if (!archive) {
+      return {
+        content: [
+          { type: 'text', text: 'Recording is disabled (BROWSER_MCP_NO_MEMORY=1); nothing saved.' },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Saved session "${archive.meta.id}"${name ? ` (${name})` : ''}: ${archive.meta.eventCount} events, ${archive.keyframes.length} keyframes. Re-open with browser_load_session or scrub with browser_timetravel.`,
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_list_sessions',
+  {
+    description:
+      'TIME MACHINE. List durably saved session archives (newest first): id, origin, time span, and event/keyframe ' +
+      'counts. Load one with browser_load_session to scrub it.',
+  },
+  async () => {
+    const metas = await sessionArchiveStore.list();
+    return { content: [{ type: 'text', text: JSON.stringify(metas, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  'browser_load_session',
+  {
+    description:
+      'TIME MACHINE. Load a saved session archive by id so browser_timetravel can reconstruct moments from it. ' +
+      'Returns the session metadata. Use this to investigate a past session (yours or one recorded earlier).',
+    inputSchema: {
+      id: z.string().describe('The session id from browser_list_sessions.'),
+    },
+  },
+  async ({ id }) => {
+    const archive = await sessionArchiveStore.load(id);
+    if (!archive) {
+      throw new Error(`No saved session "${id}". Use browser_list_sessions to see available ids.`);
+    }
+    loadedSessionArchive = archive;
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Loaded session "${id}": ${archive.meta.eventCount} events, ${archive.keyframes.length} keyframes, span ${archive.meta.startedAt}–${archive.meta.endedAt}. Now call browser_timetravel to scrub it.`,
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_timetravel',
+  {
+    description:
+      'TIME MACHINE — THE HEADLINE VERB. Reconstruct EVERYTHING as it was at a single moment: the screen (path to ' +
+      'the nearest visual frame), local/session storage, cookies, page state, the console tail, the network ' +
+      'activity in the surrounding window, the anchoring action, and the windowed event timeline. ' +
+      'Anchor by absolute time (at), by an event sequence number (seq), or — most useful — beforeLastError to ' +
+      'land just before the last failure. Operates on a loaded past session if one is loaded, else the live ' +
+      'session. This is what a snapshot tool can never do: go back in time and see the whole picture.',
+    inputSchema: {
+      at: z.number().optional().describe('Absolute timestamp (ms epoch) to reconstruct at.'),
+      seq: z
+        .number()
+        .optional()
+        .describe('Reconstruct at the moment of this event sequence number.'),
+      beforeLastError: z
+        .boolean()
+        .optional()
+        .describe('Reconstruct just before the last failed action / error / failed request.'),
+      beforeMs: z
+        .number()
+        .optional()
+        .describe('How many ms before the last error to land (default 500).'),
+      windowMs: z
+        .number()
+        .optional()
+        .describe('Half-width of the event/network window around the moment (default 2000).'),
+    },
+  },
+  async ({ at, seq, beforeLastError, beforeMs, windowMs }) => {
+    // Prefer an explicitly loaded past session; otherwise reconstruct the live one.
+    let archive = loadedSessionArchive;
+    let sourceId: string;
+    if (archive) {
+      sourceId = archive.meta.id;
+    } else {
+      requireSession();
+      await sessionRecorder.captureKeyframe(liveCaptureDeps()).catch(() => {});
+      archive = sessionRecorder.buildArchive(Date.now());
+      sourceId = archive.meta.id;
+    }
+
+    const moment = TimeMachine.reconstructAt(archive, {
+      at,
+      seq,
+      beforeLastError,
+      beforeMs,
+      windowMs,
+    });
+
+    // Resolve the visual frame to an absolute path the agent can read.
+    const screen = moment.screen
+      ? {
+          ...moment.screen,
+          absolutePath: sessionArchiveStore.frameAbsolutePath(sourceId, moment.screen.path),
+        }
+      : null;
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ source: sourceId, ...moment, screen }, null, 2),
+        },
+      ],
+    };
   },
 );
 
