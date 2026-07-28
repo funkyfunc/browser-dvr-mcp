@@ -66,6 +66,7 @@ import { SkillRegistry } from './memory/SkillRegistry.js';
 import { SessionArchiveStore } from './timemachine/SessionArchiveStore.js';
 import { SessionRecorder, type CaptureDeps } from './timemachine/SessionRecorder.js';
 import { TimeMachine, type SessionArchive } from './timemachine/SessionArchive.js';
+import { HandoffController } from './timemachine/HandoffController.js';
 
 // ─── Process-level singletons ───────────────────────────────────────────────
 // These are genuinely one-per-process: the browser lifecycle owner, the human
@@ -82,6 +83,8 @@ const sessionArchiveStore = new SessionArchiveStore();
 const sessionRecorder = new SessionRecorder(sessionArchiveStore);
 // A past session archive loaded for time-travel (null → timetravel uses the live session).
 let loadedSessionArchive: SessionArchive | null = null;
+// In-session human takeover: streams the human's actions onto the session bus.
+const handoff = new HandoffController();
 
 // WorkerBridge is optional — it's only used for DVR frame buffering (screencast).
 // In production builds (esbuild --bundle), the worker file doesn't exist as a
@@ -563,6 +566,8 @@ server.registerTool(
   async () => {
     // Persist what we learned about the site before tearing everything down.
     await siteMemory.flush().catch(() => {});
+    // Drop any dangling human handoff so its poller can't outlive the session.
+    handoff.abort();
     // Stop keyframe capture and durably archive the session so it can be
     // re-opened and scrubbed later (the flight recorder's black box).
     sessionRecorder.stop();
@@ -3906,6 +3911,86 @@ server.registerTool(
         {
           type: 'text',
           text: JSON.stringify({ source: sourceId, ...moment, screen }, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+// ─── Human handoff (in-session takeover) ────────────────────────────────────
+// When the agent can't reproduce something, hand control to a human who
+// reproduces it in the SAME window. Their actions stream onto the session bus
+// as `user`-provenance events, so the flight recorder captures the human's
+// reproduction into the same durable archive — then the agent can timetravel /
+// explain / propose_skill over it.
+
+server.registerTool(
+  'browser_begin_handoff',
+  {
+    description:
+      'HUMAN HANDOFF. Pause agent automation and let a HUMAN take control of the current browser window to ' +
+      "reproduce a behavior the agent could not. The human's clicks, inputs, and navigations are recorded onto " +
+      'the session timeline with "user" provenance and captured by the flight recorder (screen/network/storage/' +
+      'state), so afterwards you can browser_timetravel / browser_explain_last_action / browser_propose_skill over ' +
+      'what the human did. After calling this, STOP issuing actions and tell the human to reproduce the issue, ' +
+      'then either call browser_end_handoff when they say they are done, or have them press Ctrl/Cmd+Shift+Enter ' +
+      'in the browser to signal completion. Requires a visible (non-headless) session.',
+    inputSchema: {
+      note: z
+        .string()
+        .optional()
+        .describe('What the human is being asked to reproduce (recorded on the timeline).'),
+    },
+  },
+  async ({ note }) => {
+    const { page } = requireSession();
+    if (handoff.isActive()) {
+      throw new Error('A handoff is already active. Call browser_end_handoff first.');
+    }
+    await handoff.begin(page, session().eventBus, note);
+    const headlessWarning = connectionManager.getIsHeadless()
+      ? '\n\n⚠ This session is HEADLESS — there is no visible window for a human to interact with. ' +
+        'Relaunch with browser_launch({ headless: false }) so the human can take control.'
+      : '';
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Handoff started — the human now has control.${note ? ` Task: ${note}.` : ''} ` +
+            `Stop issuing actions. When the human is done, call browser_end_handoff (or they can press ` +
+            `Ctrl/Cmd+Shift+Enter in the browser). Everything they do is being recorded as "user" events.` +
+            headlessWarning,
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_end_handoff',
+  {
+    description:
+      "End a human handoff started with browser_begin_handoff. Captures the human's final actions, returns a " +
+      'summary (how many interactions were recorded, the time span, and whether the human signaled completion ' +
+      "in-browser), and hands control back to the agent. The human's reproduction is now in the durable session " +
+      'archive — scrub it with browser_timetravel, diagnose it with browser_explain_last_action, or capture it as ' +
+      'a reusable flow with browser_propose_skill.',
+  },
+  async () => {
+    const { page } = requireSession();
+    if (!handoff.isActive()) {
+      throw new Error('No active handoff. Start one with browser_begin_handoff first.');
+    }
+    const summary = await handoff.end(page);
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            JSON.stringify(summary, null, 2) +
+            `\n\nControl returned to the agent. The human's reproduction is recorded on the session timeline — ` +
+            `use browser_timetravel to scrub it or browser_explain_last_action to diagnose what happened.`,
         },
       ],
     };

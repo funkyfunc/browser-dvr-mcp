@@ -9,11 +9,19 @@
 import { CDPConnectionManager } from '../core/CDPConnectionManager.js';
 import { SessionTelemetryManager } from '../telemetry/SessionTelemetryManager.js';
 
-const HUMAN_INTERACTION_TRACKER = `
+export const HUMAN_INTERACTION_TRACKER = `
 (function() {
   if (window.__bbmcp_human_tracker) return;
   window.__bbmcp_human_tracker = true;
   window.__bbmcp_human_events = [];
+
+  // In-browser "I'm done" signal for a session handoff: Ctrl/Cmd+Shift+Enter.
+  // Lets a human end their takeover without leaving the browser window.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.shiftKey && (e.ctrlKey || e.metaKey)) {
+      window.__bbmcp_human_events.push({ type: 'handoff_done', timestamp: Date.now() });
+    }
+  }, true);
 
   document.addEventListener('click', (e) => {
     const t = e.target;
