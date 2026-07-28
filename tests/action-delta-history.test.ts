@@ -85,7 +85,7 @@ describe('Unified Delta & Visual Auto-History Logging', () => {
     expect(files.some((f) => f.startsWith('step_') && f.endsWith('.png'))).toBe(true);
 
     const historyContent = readFileSync(join(TEST_HISTORY_DIR, 'session_history.md'), 'utf-8');
-    expect(historyContent).toContain('# Best Browser Session History');
+    expect(historyContent).toContain('# Browser DVR Session History');
     expect(historyContent).toContain('Step 1: navigate');
     expect(historyContent).toContain('Step 2: click');
     expect(historyContent).toContain('### DOM Changes');

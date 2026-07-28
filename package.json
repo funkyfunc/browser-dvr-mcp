@@ -1,20 +1,66 @@
 {
-  "name": "agentic-browser-observability-mcp",
+  "name": "browser-dvr-mcp",
   "version": "0.1.0",
-  "description": "Agentic Browser Observability Model Context Protocol Server",
+  "mcpName": "io.github.funkyfunc/browser-dvr-mcp",
+  "description": "A DVR and time-travel debugger for AI browser agents (MCP). Records every session — screen, DOM, network, console, storage — with provenance, so an agent can rewind to the moment it broke and see exactly what happened.",
   "type": "module",
-  "main": "dist/index.js",
-  "bin": {
-    "agentic-browser-observability-mcp": "./dist/index.js"
+  "license": "MIT",
+  "author": "funkyfunc",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "browser",
+    "browser-automation",
+    "chrome",
+    "cdp",
+    "chrome-devtools-protocol",
+    "puppeteer",
+    "time-travel-debugging",
+    "session-replay",
+    "dvr",
+    "flight-recorder",
+    "debugging",
+    "observability",
+    "har",
+    "web-debugging",
+    "ai-agents",
+    "agent-tools",
+    "claude",
+    "llm",
+    "playwright-alternative"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/funkyfunc/browser-dvr-mcp.git"
   },
-  "types": "dist/index.d.ts",
+  "homepage": "https://github.com/funkyfunc/browser-dvr-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/funkyfunc/browser-dvr-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "browser-dvr-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "rimraf dist && tsc --noEmit && esbuild src/index.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/index.js && esbuild src/workers/serializationWorker.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/serializationWorker.js && chmod +x dist/index.js",
+    "prepublishOnly": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "lint": "eslint \"src/**/*.ts\" \"tests/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.eslint.json",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "inspector": "npx @modelcontextprotocol/inspector node dist/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

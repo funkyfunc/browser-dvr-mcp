@@ -292,7 +292,7 @@ ${consoleDetails}
 
   try {
     if (session().stepCounter === 1) {
-      const header = `# Best Browser Session History
+      const header = `# Browser DVR Session History
       
 * **Session ID:** ${session().telemetry?.id || 'unknown'}
 * **Started At:** ${new Date(session().telemetry?.startedAt || Date.now()).toISOString()}
@@ -312,7 +312,7 @@ ${consoleDetails}
 // ─── MCP Server ─────────────────────────────────────────────────────────────
 
 export const server = new McpServer({
-  name: 'best-browser-mcp',
+  name: 'browser-dvr-mcp',
   version: '2.0.0',
 });
 
@@ -447,7 +447,7 @@ server.registerTool(
       'Verify connection to the Best Browser MCP server. Returns "pong" if the server is healthy and ready to accept commands.',
   },
   async () => ({
-    content: [{ type: 'text', text: 'pong — Best Browser MCP v2.0 is running.' }],
+    content: [{ type: 'text', text: 'pong — Browser DVR MCP is running.' }],
   }),
 );
 
