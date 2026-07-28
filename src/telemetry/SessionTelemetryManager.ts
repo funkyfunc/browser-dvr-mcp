@@ -21,6 +21,28 @@ import {
   type SessionSummary,
 } from '../core/types.js';
 
+// ─── Network body capture ────────────────────────────────────────────────────
+// Bodies are the #1 debugging blind spot (the actual API error payload), but
+// also the most PII-dense, so capture is bounded: opt-out, size-capped, textual
+// resource types only, and redacted.
+const CAPTURE_BODIES = process.env.BROWSER_MCP_NO_BODIES !== '1';
+const MAX_BODY_BYTES = 32 * 1024; // keep at most 32KB of any single body
+const MAX_BODY_SOURCE_BYTES = 512 * 1024; // don't even read bodies larger than this
+const TEXTUAL_MIME = /(json|text|xml|javascript|html|csv|x-www-form-urlencoded|graphql)/i;
+const CAPTURABLE_RESOURCE_TYPES = new Set(['xhr', 'fetch', 'document']);
+
+function capBody(body: string): { body: string; truncated: boolean } {
+  if (body.length <= MAX_BODY_BYTES) return { body, truncated: false };
+  return { body: body.slice(0, MAX_BODY_BYTES), truncated: true };
+}
+
+function isBodyCapturable(resourceType?: string, mimeType?: string, size?: number): boolean {
+  if (resourceType && !CAPTURABLE_RESOURCE_TYPES.has(resourceType)) return false;
+  if (size !== undefined && size > MAX_BODY_SOURCE_BYTES) return false;
+  if (mimeType && !TEXTUAL_MIME.test(mimeType)) return false;
+  return true;
+}
+
 const MUTATION_INJECT_SCRIPT = `
 (function() {
   if (window.__mcp_observer_initialized) return;
@@ -342,12 +364,22 @@ export class SessionTelemetryManager {
         url: reqUrl,
         timestamp: Date.now(),
       });
-      // HAR-grade context: resourceType + redacted request headers.
+      // HAR-grade context: resourceType + redacted request headers + body.
       let requestHeaders: Record<string, string> | undefined;
       let resourceType: string | undefined;
+      let requestBody: string | undefined;
+      let bodyTruncated = false;
       try {
         requestHeaders = redactHeaders(req.headers());
         resourceType = req.resourceType();
+        if (CAPTURE_BODIES) {
+          const post = req.postData();
+          if (post) {
+            const capped = capBody(post);
+            requestBody = redactText(capped.body);
+            bodyTruncated = capped.truncated;
+          }
+        }
       } catch {
         /* best-effort */
       }
@@ -357,12 +389,14 @@ export class SessionTelemetryManager {
         url: reqUrl,
         resourceType,
         requestHeaders,
+        requestBody,
+        bodyTruncated: bodyTruncated || undefined,
         eventType: 'request',
         timestamp: Date.now(),
       });
     });
 
-    page.on('response', (res) => {
+    page.on('response', async (res) => {
       const reqId = (res.request() as any).__telemetryReqId || 'req-unknown';
       const pending = this.pendingRequests.get(reqId);
       const duration = pending ? Date.now() - pending.timestamp : undefined;
@@ -389,6 +423,22 @@ export class SessionTelemetryManager {
         /* best-effort */
       }
 
+      // Response body — the actual API-debugging payload. Only for the resource
+      // types an agent debugging a site cares about (xhr/fetch/document), and
+      // only for textual mime types, size-capped and redacted. Never throws.
+      let responseBody: string | undefined;
+      let bodyTruncated = false;
+      if (CAPTURE_BODIES && isBodyCapturable(resourceType, mimeType, size)) {
+        try {
+          const text = await res.text();
+          const capped = capBody(text);
+          responseBody = redactText(capped.body);
+          bodyTruncated = capped.truncated;
+        } catch {
+          /* body unavailable (redirect, no-content, already consumed) */
+        }
+      }
+
       const respEvent: NetworkEvent = {
         id: reqId,
         method: res.request().method(),
@@ -399,6 +449,8 @@ export class SessionTelemetryManager {
         resourceType,
         mimeType,
         responseHeaders,
+        responseBody,
+        bodyTruncated: bodyTruncated || undefined,
         eventType: 'response',
         timestamp: Date.now(),
       };
@@ -701,6 +753,11 @@ export class SessionTelemetryManager {
   }
 
   // ─── Timeline (for Human Recording alignment) ─────────────────────────
+
+  /** All captured network events (request/response/failed), for HAR export. */
+  getNetworkEvents(): NetworkEvent[] {
+    return this.networkBuffer.toArray();
+  }
 
   getTimeline(sinceMs?: number): unknown[] {
     const cutoff = sinceMs ? Date.now() - sinceMs : 0;

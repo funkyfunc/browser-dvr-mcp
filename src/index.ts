@@ -67,6 +67,13 @@ import { SessionArchiveStore } from './timemachine/SessionArchiveStore.js';
 import { SessionRecorder, type CaptureDeps } from './timemachine/SessionRecorder.js';
 import { TimeMachine, type SessionArchive } from './timemachine/SessionArchive.js';
 import { HandoffController } from './timemachine/HandoffController.js';
+import {
+  queryTimeline,
+  whenChanged,
+  type TimelineQuery,
+  type ChangeTarget,
+} from './timemachine/queries.js';
+import { buildHar } from './telemetry/har.js';
 
 // ─── Process-level singletons ───────────────────────────────────────────────
 // These are genuinely one-per-process: the browser lifecycle owner, the human
@@ -3517,6 +3524,18 @@ function liveCaptureDeps(): CaptureDeps {
   };
 }
 
+// The archive that time-travel queries operate on: an explicitly loaded past
+// session if one is loaded, otherwise a fresh snapshot of the live session.
+async function activeArchive(): Promise<{ archive: SessionArchive; source: string }> {
+  if (loadedSessionArchive) {
+    return { archive: loadedSessionArchive, source: loadedSessionArchive.meta.id };
+  }
+  requireSession();
+  await sessionRecorder.captureKeyframe(liveCaptureDeps()).catch(() => {});
+  const archive = sessionRecorder.buildArchive(Date.now());
+  return { archive, source: archive.meta.id };
+}
+
 // Shared live-browser plumbing for replaying a bundle and checking an assertion
 // against the current session — used by both scenario runs and skill validation.
 function liveReplayDriver() {
@@ -3991,6 +4010,214 @@ server.registerTool(
             JSON.stringify(summary, null, 2) +
             `\n\nControl returned to the agent. The human's reproduction is recorded on the session timeline — ` +
             `use browser_timetravel to scrub it or browser_explain_last_action to diagnose what happened.`,
+        },
+      ],
+    };
+  },
+);
+
+// ─── Debugging queries over the record ──────────────────────────────────────
+// "Execution as a queryable database of time": inspect the actual payloads,
+// find events after the fact, ask when something last changed, and assert.
+
+server.registerTool(
+  'browser_export_har',
+  {
+    description:
+      'Export captured network traffic as a standard HAR 1.2 archive — request/response headers AND BODIES, ' +
+      'statuses, and timings. This is how you see the actual failing API error payload or malformed JSON that a ' +
+      'bare status code hides. Bodies are redacted and size-capped; only textual API/document responses are ' +
+      'captured (set BROWSER_MCP_NO_BODIES=1 to disable body capture entirely).',
+    inputSchema: {
+      savePath: z
+        .string()
+        .optional()
+        .describe(
+          'Optional path (contained to the output dir) to write the .har file. Omit to return it inline.',
+        ),
+      urlContains: z
+        .string()
+        .optional()
+        .describe('Only include requests whose URL contains this substring.'),
+    },
+  },
+  async ({ savePath, urlContains }) => {
+    const tel = requireTelemetry();
+    let events = tel.getNetworkEvents();
+    if (urlContains) events = events.filter((e) => e.url.includes(urlContains));
+    const har = buildHar(events);
+    const entryCount = har.log.entries.length;
+    if (savePath) {
+      const resolved = resolveSafePath(savePath.endsWith('.har') ? savePath : `${savePath}.har`);
+      const { mkdir, writeFile } = await import('fs/promises');
+      await mkdir(path.dirname(resolved), { recursive: true }).catch(() => {});
+      await writeFile(resolved, redactText(JSON.stringify(har)));
+      return {
+        content: [
+          { type: 'text', text: `Wrote HAR with ${entryCount} request(s) to ${resolved}.` },
+        ],
+      };
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(har, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  'browser_query_timeline',
+  {
+    description:
+      'TRACE-AS-DATABASE. Query the recorded session timeline for events matching a predicate — a retroactive ' +
+      'logpoint you add AFTER the fact. E.g. every request that 5xx\'d ({ kind: "network", statusGte: 500 }), ' +
+      'every console error ({ kind: "console", level: "error" }), or anything mentioning a string ' +
+      '({ textContains: "checkout" }). Operates on a loaded past session if one is loaded, else the live session.',
+    inputSchema: {
+      kind: z
+        .enum(['network', 'console', 'mutation', 'interaction', 'navigation', 'action'])
+        .optional()
+        .describe('Restrict to one event kind.'),
+      trust: z
+        .enum(['chrome-native', 'page-controlled', 'tool-output', 'user'])
+        .optional()
+        .describe(
+          'Restrict to one provenance/trust level (e.g. "user" for human-handoff actions).',
+        ),
+      status: z.number().optional().describe('Exact network status.'),
+      statusGte: z.number().optional().describe('Network status at or above (e.g. 400).'),
+      level: z.string().optional().describe('Console level (e.g. "error").'),
+      urlContains: z.string().optional().describe('Substring match on a network/navigation URL.'),
+      textContains: z.string().optional().describe('Substring match anywhere in the event data.'),
+      from: z.number().optional().describe('Only events at/after this timestamp (ms epoch).'),
+      to: z.number().optional().describe('Only events at/before this timestamp (ms epoch).'),
+    },
+  },
+  async (args) => {
+    const { archive, source } = await activeArchive();
+    const hits = queryTimeline(archive.events, args as TimelineQuery);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ source, count: hits.length, events: hits }, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_when_changed',
+  {
+    description:
+      'BACKWARD DATA-BREAKPOINT. Ask when something LAST changed before a moment, and to what — the time-travel ' +
+      'debugger move. Targets: a URL ({ type: "url" }), a storage key ({ type: "storage", key: "token" }), or a ' +
+      'DOM region by text ({ type: "dom", textContains: "modal-backdrop" }). Anchor the "before" moment by ' +
+      'timestamp or "last_error" (just before the last failed action/error/failed request). Answered from the ' +
+      'recorded timeline + storage keyframes (storage granularity = the keyframe interval).',
+    inputSchema: {
+      type: z.enum(['url', 'storage', 'dom']).describe('What to trace.'),
+      key: z.string().optional().describe('For type=storage: the storage key.'),
+      store: z
+        .enum(['local', 'session'])
+        .optional()
+        .describe('For type=storage: which store (default local).'),
+      textContains: z
+        .string()
+        .optional()
+        .describe('For type=dom: match mutations mentioning this text.'),
+      before: z
+        .union([z.number(), z.literal('last_error')])
+        .optional()
+        .describe(
+          'Moment to look before: a timestamp (ms epoch) or "last_error" (default: end of session).',
+        ),
+    },
+  },
+  async ({ type, key, store, textContains, before }) => {
+    const { archive, source } = await activeArchive();
+
+    // Resolve the "before" anchor.
+    let beforeTs: number;
+    if (typeof before === 'number') {
+      beforeTs = before;
+    } else if (before === 'last_error') {
+      const errorKinds = (e: (typeof archive.events)[number]) => {
+        const d = (e.data ?? {}) as Record<string, unknown>;
+        if (e.kind === 'console') return d.level === 'error';
+        if (e.kind === 'action') return d.success === false;
+        if (e.kind === 'network')
+          return d.eventType === 'failed' || (typeof d.status === 'number' && d.status >= 400);
+        return false;
+      };
+      const lastErr = [...archive.events].reverse().find(errorKinds);
+      beforeTs = lastErr ? lastErr.timestamp : (archive.meta.endedAt ?? Date.now());
+    } else {
+      beforeTs = archive.meta.endedAt ?? Date.now();
+    }
+
+    let target: ChangeTarget;
+    if (type === 'storage') {
+      if (!key) throw new Error('type=storage requires a "key".');
+      target = { type: 'storage', key, store };
+    } else if (type === 'dom') {
+      if (!textContains) throw new Error('type=dom requires "textContains".');
+      target = { type: 'dom', textContains };
+    } else {
+      target = { type: 'url' };
+    }
+
+    const result = whenChanged(archive, target, beforeTs);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ source, beforeTs, ...result }, null, 2) }],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_verify',
+  {
+    description:
+      'ASSERT / CHECKPOINT. Verify a condition holds right now and RECORD the pass/fail onto the session timeline ' +
+      '(so time-travel and explain can see what you checked and when). Same declarative vocabulary as ' +
+      'browser_wait_for: text / selector / url / predicate / network_idle, etc. Returns { passed, details }. Use ' +
+      'this to plant explicit checkpoints while driving a flow ("the success banner is visible").',
+    inputSchema: {
+      type: z.enum([
+        'selector',
+        'selector_hidden',
+        'text',
+        'text_hidden',
+        'url',
+        'network_idle',
+        'predicate',
+      ]),
+      value: z
+        .string()
+        .optional()
+        .describe('Selector, text, URL substring, or JS expression (per type).'),
+      label: z.string().optional().describe('A human-readable name for this checkpoint.'),
+      timeoutMs: z
+        .number()
+        .optional()
+        .describe('How long to wait for the condition (default 2000).'),
+    },
+  },
+  async ({ type, value, label, timeoutMs }) => {
+    const { page, cdp } = requireSession();
+    const condition = { type, value } as WaitCondition;
+    const r = await waitForCondition(page, cdp, requireTelemetry(), condition, timeoutMs ?? 2000);
+    // Record the checkpoint on the timeline (tool-output provenance).
+    session().eventBus.emit('interaction', 'tool-output', {
+      type: 'verify',
+      label,
+      condition,
+      passed: r.met,
+      details: r.details,
+    });
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ passed: r.met, label, condition, details: r.details }, null, 2),
         },
       ],
     };

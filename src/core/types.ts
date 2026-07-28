@@ -78,6 +78,10 @@ export interface NetworkEvent {
   /** Request/response headers, with sensitive ones redacted (HAR-grade context). */
   requestHeaders?: Record<string, string>;
   responseHeaders?: Record<string, string>;
+  /** Request/response bodies (redacted + size-capped) — the API-debugging payload. */
+  requestBody?: string;
+  responseBody?: string;
+  bodyTruncated?: boolean;
   eventType: 'request' | 'response' | 'failed';
   timestamp: number;
   errorText?: string;
