@@ -13,6 +13,7 @@
 
 import type { BusEvent, EventKind, Trust } from '../core/EventBus.js';
 import type { SessionArchive, StorageKeyframe } from './SessionArchive.js';
+import { TimeMachine } from './SessionArchive.js';
 
 // ── queryTimeline ────────────────────────────────────────────────────────────
 
@@ -174,4 +175,91 @@ export function whenChanged(
         target: `dom~"${target.textContains}"`,
         note: 'no matching DOM mutation recorded before the moment',
       };
+}
+
+// ── stateDiff ────────────────────────────────────────────────────────────────
+
+export interface StorageDelta {
+  added: { key: string; value: string }[];
+  removed: { key: string; value: string }[];
+  changed: { key: string; from: string; to: string }[];
+}
+
+export interface StateDiff {
+  from: number;
+  to: number;
+  url: { from?: string; to?: string; changed: boolean };
+  title: { from?: string; to?: string; changed: boolean };
+  localStorage: StorageDelta;
+  sessionStorage: StorageDelta;
+  /** Events that occurred in (from, to], bucketed. */
+  between: {
+    navigations: BusEvent[];
+    actions: BusEvent[];
+    consoleErrors: BusEvent[];
+    networkFailures: BusEvent[];
+    networkCount: number;
+    mutationCount: number;
+  };
+}
+
+function diffStores(
+  a: Record<string, string> | undefined,
+  b: Record<string, string> | undefined,
+): StorageDelta {
+  const from = a ?? {};
+  const to = b ?? {};
+  const delta: StorageDelta = { added: [], removed: [], changed: [] };
+  for (const [key, value] of Object.entries(to)) {
+    if (!(key in from)) delta.added.push({ key, value });
+    else if (from[key] !== value) delta.changed.push({ key, from: from[key], to: value });
+  }
+  for (const [key, value] of Object.entries(from)) {
+    if (!(key in to)) delta.removed.push({ key, value });
+  }
+  return delta;
+}
+
+/**
+ * Redux-style "what changed between two moments" — reconstruct the state at
+ * `fromTs` and `toTs` and diff storage/url/state, plus bucket the events that
+ * occurred between them. Pure over the archive.
+ */
+export function stateDiff(archive: SessionArchive, fromTs: number, toTs: number): StateDiff {
+  const [lo, hi] = fromTs <= toTs ? [fromTs, toTs] : [toTs, fromTs];
+  const a = TimeMachine.reconstructAt(archive, { at: lo, windowMs: 0 });
+  const b = TimeMachine.reconstructAt(archive, { at: hi, windowMs: 0 });
+
+  const between = archive.events.filter((e) => e.timestamp > lo && e.timestamp <= hi);
+  const isNetFailure = (e: BusEvent) => {
+    const d = e.data as { eventType?: string; status?: number };
+    return (
+      e.kind === 'network' &&
+      (d.eventType === 'failed' || (typeof d.status === 'number' && d.status >= 400))
+    );
+  };
+
+  const urlFrom = a.state?.url;
+  const urlTo = b.state?.url;
+  const titleFrom = a.state?.title;
+  const titleTo = b.state?.title;
+
+  return {
+    from: lo,
+    to: hi,
+    url: { from: urlFrom, to: urlTo, changed: urlFrom !== urlTo },
+    title: { from: titleFrom, to: titleTo, changed: titleFrom !== titleTo },
+    localStorage: diffStores(a.storage?.localStorage, b.storage?.localStorage),
+    sessionStorage: diffStores(a.storage?.sessionStorage, b.storage?.sessionStorage),
+    between: {
+      navigations: between.filter((e) => e.kind === 'navigation'),
+      actions: between.filter((e) => e.kind === 'action'),
+      consoleErrors: between.filter(
+        (e) => e.kind === 'console' && (e.data as { level?: string }).level === 'error',
+      ),
+      networkFailures: between.filter(isNetFailure),
+      networkCount: between.filter((e) => e.kind === 'network').length,
+      mutationCount: between.filter((e) => e.kind === 'mutation').length,
+    },
+  };
 }

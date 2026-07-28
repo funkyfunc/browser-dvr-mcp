@@ -70,9 +70,12 @@ import { HandoffController } from './timemachine/HandoffController.js';
 import {
   queryTimeline,
   whenChanged,
+  stateDiff,
   type TimelineQuery,
   type ChangeTarget,
 } from './timemachine/queries.js';
+import { encodeAnchor, decodeAnchor } from './timemachine/anchor.js';
+import { analyzeTrajectory } from './replay/trajectory.js';
 import { buildHar } from './telemetry/har.js';
 
 // ─── Process-level singletons ───────────────────────────────────────────────
@@ -3536,6 +3539,47 @@ async function activeArchive(): Promise<{ archive: SessionArchive; source: strin
   return { archive, source: archive.meta.id };
 }
 
+/** The archive an anchor points at (loading a saved session if needed), else the active one. */
+async function archiveForAnchorOrActive(
+  token?: string,
+): Promise<{ archive: SessionArchive; source: string }> {
+  const anc = token ? decodeAnchor(token) : null;
+  if (anc) {
+    if (loadedSessionArchive?.meta.id === anc.session) {
+      return { archive: loadedSessionArchive, source: anc.session };
+    }
+    const loaded = await sessionArchiveStore.load(anc.session);
+    if (loaded) return { archive: loaded, source: anc.session };
+  }
+  return activeArchive();
+}
+
+/** The timestamp of the last error-shaped event in an archive, or null. */
+function lastErrorTs(archive: SessionArchive): number | null {
+  for (let i = archive.events.length - 1; i >= 0; i--) {
+    const e = archive.events[i];
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    const isErr =
+      (e.kind === 'console' && d.level === 'error') ||
+      (e.kind === 'action' && d.success === false) ||
+      (e.kind === 'network' &&
+        (d.eventType === 'failed' || (typeof d.status === 'number' && d.status >= 400)));
+    if (isErr) return e.timestamp;
+  }
+  return null;
+}
+
+/** Resolve a moment input (timestamp | anchor token | "last_error") to a timestamp. */
+function resolveMoment(input: number | string | undefined, archive: SessionArchive): number {
+  if (typeof input === 'number') return input;
+  if (typeof input === 'string') {
+    const anc = decodeAnchor(input);
+    if (anc) return anc.ts;
+    if (input === 'last_error') return lastErrorTs(archive) ?? archive.meta.endedAt ?? Date.now();
+  }
+  return archive.meta.endedAt ?? Date.now();
+}
+
 // Shared live-browser plumbing for replaying a bundle and checking an assertion
 // against the current session — used by both scenario runs and skill validation.
 function liveReplayDriver() {
@@ -3925,11 +3969,15 @@ server.registerTool(
         }
       : null;
 
+    // A portable handle to this exact moment — pass it to browser_state_diff /
+    // browser_when_changed to compose further debugging steps.
+    const anchor = encodeAnchor({ session: sourceId, ts: moment.at });
+
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ source: sourceId, ...moment, screen }, null, 2),
+          text: JSON.stringify({ source: sourceId, anchor, ...moment, screen }, null, 2),
         },
       ],
     };
@@ -4111,8 +4159,9 @@ server.registerTool(
       'BACKWARD DATA-BREAKPOINT. Ask when something LAST changed before a moment, and to what — the time-travel ' +
       'debugger move. Targets: a URL ({ type: "url" }), a storage key ({ type: "storage", key: "token" }), or a ' +
       'DOM region by text ({ type: "dom", textContains: "modal-backdrop" }). Anchor the "before" moment by ' +
-      'timestamp or "last_error" (just before the last failed action/error/failed request). Answered from the ' +
-      'recorded timeline + storage keyframes (storage granularity = the keyframe interval).',
+      'timestamp, an anchor token from browser_timetravel, or "last_error" (just before the last failed action/' +
+      'error/failed request). Answered from the recorded timeline + storage keyframes (storage granularity = the ' +
+      'keyframe interval).',
     inputSchema: {
       type: z.enum(['url', 'storage', 'dom']).describe('What to trace.'),
       key: z.string().optional().describe('For type=storage: the storage key.'),
@@ -4125,34 +4174,19 @@ server.registerTool(
         .optional()
         .describe('For type=dom: match mutations mentioning this text.'),
       before: z
-        .union([z.number(), z.literal('last_error')])
+        .union([z.number(), z.string()])
         .optional()
         .describe(
-          'Moment to look before: a timestamp (ms epoch) or "last_error" (default: end of session).',
+          'Moment to look before: a timestamp (ms epoch), an anchor token, or "last_error" (default: end of session).',
         ),
     },
   },
   async ({ type, key, store, textContains, before }) => {
-    const { archive, source } = await activeArchive();
-
-    // Resolve the "before" anchor.
-    let beforeTs: number;
-    if (typeof before === 'number') {
-      beforeTs = before;
-    } else if (before === 'last_error') {
-      const errorKinds = (e: (typeof archive.events)[number]) => {
-        const d = (e.data ?? {}) as Record<string, unknown>;
-        if (e.kind === 'console') return d.level === 'error';
-        if (e.kind === 'action') return d.success === false;
-        if (e.kind === 'network')
-          return d.eventType === 'failed' || (typeof d.status === 'number' && d.status >= 400);
-        return false;
-      };
-      const lastErr = [...archive.events].reverse().find(errorKinds);
-      beforeTs = lastErr ? lastErr.timestamp : (archive.meta.endedAt ?? Date.now());
-    } else {
-      beforeTs = archive.meta.endedAt ?? Date.now();
-    }
+    // An anchor may point at a saved session; otherwise use the active one.
+    const { archive, source } = await archiveForAnchorOrActive(
+      typeof before === 'string' ? before : undefined,
+    );
+    const beforeTs = resolveMoment(before, archive);
 
     let target: ChangeTarget;
     if (type === 'storage') {
@@ -4218,6 +4252,63 @@ server.registerTool(
         {
           type: 'text',
           text: JSON.stringify({ passed: r.met, label, condition, details: r.details }, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+server.registerTool(
+  'browser_state_diff',
+  {
+    description:
+      'DIFF TWO MOMENTS. Given two moments (anchor tokens from browser_timetravel, timestamps, or "last_error"), ' +
+      'show what changed between them: localStorage/sessionStorage keys added/removed/changed, URL and title ' +
+      'changes, and the navigations, actions, console errors, and failed requests that occurred in between. The ' +
+      'fast way to answer "what actually changed between when it worked and when it broke."',
+    inputSchema: {
+      from: z
+        .union([z.number(), z.string()])
+        .describe('The earlier moment: an anchor token, a timestamp (ms epoch), or "last_error".'),
+      to: z
+        .union([z.number(), z.string()])
+        .describe('The later moment: an anchor token, a timestamp (ms epoch), or "last_error".'),
+    },
+  },
+  async ({ from, to }) => {
+    const { archive, source } = await archiveForAnchorOrActive(
+      typeof from === 'string' ? from : typeof to === 'string' ? to : undefined,
+    );
+    const fromTs = resolveMoment(from, archive);
+    const toTs = resolveMoment(to, archive);
+    const diff = stateDiff(archive, fromTs, toTs);
+    return { content: [{ type: 'text', text: JSON.stringify({ source, ...diff }, null, 2) }] };
+  },
+);
+
+server.registerTool(
+  'browser_analyze_run',
+  {
+    description:
+      'FIRST POINT OF FAILURE. Scan the WHOLE recorded run (not just the last action) for every failure — failed ' +
+      'actions and failed browser_verify checkpoints — label each with an error category (occluded-target, ' +
+      'target-not-found, timeout, auth-failure, server-error, network-failure, navigation-lost, console-exception, ' +
+      'assertion-failed), and surface the EARLIEST one, which is usually the true root cause (later failures are ' +
+      'often its fallout). Includes a causal explanation of the first failure. Operates on a loaded past session ' +
+      'if one is loaded, else the live session.',
+  },
+  async () => {
+    const { archive, source } = await activeArchive();
+    const report = analyzeTrajectory(archive.events);
+    // Enrich the first failure with a full causal explanation.
+    const firstFailureDetail = report.firstFailure
+      ? causalExplain(archive.events, { anchorSeq: report.firstFailure.seq })
+      : null;
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ source, ...report, firstFailureDetail }, null, 2),
         },
       ],
     };
