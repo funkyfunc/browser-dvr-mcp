@@ -453,7 +453,7 @@ server.registerTool(
 
 const HELP_TEXT = `browser-dvr-mcp — a DVR + time-travel debugger for browser agents. Tools grouped by purpose:
 
-START: browser_launch({ headless?, url? }) → then get_semantic_surface to perceive.
+START: browser_launch({ headless?, url?, bypassCache? }) → then get_semantic_surface to perceive. For LOCAL dev iteration pass bypassCache:true (on launch or navigate) so stale cached scripts/styles don't make a fresh fix look broken.
 
 PERCEIVE: get_semantic_surface (fused a11y tree + geometry; the [id: NNN] tags feed atomic_interact), get_element_tree, get_state_delta, browser_screenshot.
 
@@ -506,6 +506,14 @@ server.registerTool(
           'Path to a persistent Chrome user profile directory. Useful for preserving cookies and localStorage across sessions.',
         ),
       url: z.string().url().optional().describe('URL to navigate to immediately after launch.'),
+      bypassCache: z
+        .boolean()
+        .optional()
+        .describe(
+          'Disable the HTTP cache for the whole session so every navigation (including this one) refetches ' +
+            'scripts/styles COLD. Strongly recommended when iterating on a LOCAL dev site — a stale cached asset ' +
+            'can silently make a just-shipped fix appear to fail.',
+        ),
       autoTrackHistory: z
         .boolean()
         .optional()
@@ -525,6 +533,7 @@ server.registerTool(
     headless,
     userDataDir,
     url,
+    bypassCache = false,
     autoTrackHistory: trackHistory = false,
     sessionHistoryDir: historyDir,
   }) => {
@@ -550,6 +559,12 @@ server.registerTool(
 
     // Checkpoint the node index for delta tracking
     sess.nodeIndex.clear();
+
+    // Disable the HTTP cache up front (dev-loop want) so even the initial
+    // navigation below is cold, not just subsequent ones.
+    if (bypassCache) {
+      await connectionManager.setCacheEnabled(false).catch(() => {});
+    }
 
     // Navigate BEFORE starting screencast to avoid race condition on about:blank.
     // The screencast requires a rendered page; starting it before navigation can

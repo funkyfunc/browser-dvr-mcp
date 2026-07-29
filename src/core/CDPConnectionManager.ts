@@ -381,11 +381,11 @@ export class CDPConnectionManager {
 
     // Cache-bypass for local dev iteration: disable the HTTP cache so this (and
     // subsequent) navigations refetch scripts/styles cold instead of re-serving
-    // a stale build. Persists for the session — the common dev-loop want.
-    if (options.bypassCache && this.cdpSession) {
-      await this.cdpSession
-        .send('Network.setCacheDisabled', { cacheDisabled: true })
-        .catch(() => {});
+    // a stale build. Uses puppeteer's setCacheEnabled, which manages the Network
+    // domain itself — a raw Network.setCacheDisabled no-ops here because our CDP
+    // session never enables Network. Persists for the session — the dev-loop want.
+    if (options.bypassCache) {
+      await this.setCacheEnabled(false);
     }
 
     try {
@@ -473,6 +473,18 @@ export class CDPConnectionManager {
    * Must be called after launch AND after every cross-origin navigation,
    * because cross-origin navigations can invalidate domain enablement.
    */
+  /**
+   * Toggle the HTTP cache for the active page. `false` forces cold refetches of
+   * scripts/styles — essential for local dev iteration (a stale cached asset can
+   * silently make a just-shipped fix appear to fail). Puppeteer enables the
+   * Network domain internally, so this actually takes effect (unlike a raw
+   * Network.setCacheDisabled on our AX/DOM CDP session).
+   */
+  async setCacheEnabled(enabled: boolean): Promise<void> {
+    if (!this.page) throw new Error('No active page. Launch browser first.');
+    await this.page.setCacheEnabled(enabled);
+  }
+
   private async enableCDPDomains(): Promise<void> {
     if (!this.cdpSession) return;
     await this.cdpSession.send('Accessibility.enable');
