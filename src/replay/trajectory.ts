@@ -30,11 +30,71 @@ export interface FailurePoint {
   summary: string;
 }
 
+/** What the session actually DID — so a passive debugging run still reads usefully. */
+export interface ActivitySummary {
+  navigations: number;
+  actions: number; // atomic_interact clicks/types/etc.
+  evaluations: number; // evaluate_in_context
+  waits: number; // browser_wait_for
+  verifies: number; // browser_verify
+  networkRequests: number;
+  networkFailures: number;
+  consoleErrors: number;
+  mutations: number;
+  totalEvents: number;
+}
+
 export interface TrajectoryReport {
+  /** Interaction actions (clicks/types). Kept for back-compat; see `activity` for the full picture. */
   totalActions: number;
+  activity: ActivitySummary;
   failureCount: number;
   firstFailure: FailurePoint | null;
   failures: FailurePoint[];
+  summary: string;
+}
+
+function summarize(events: BusEvent[]): ActivitySummary {
+  const a: ActivitySummary = {
+    navigations: 0,
+    actions: 0,
+    evaluations: 0,
+    waits: 0,
+    verifies: 0,
+    networkRequests: 0,
+    networkFailures: 0,
+    consoleErrors: 0,
+    mutations: 0,
+    totalEvents: events.length,
+  };
+  for (const e of events) {
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    switch (e.kind) {
+      case 'navigation':
+        a.navigations++;
+        break;
+      case 'action':
+        a.actions++;
+        break;
+      case 'mutation':
+        a.mutations++;
+        break;
+      case 'console':
+        if (d.level === 'error') a.consoleErrors++;
+        break;
+      case 'network':
+        a.networkRequests++;
+        if (d.eventType === 'failed' || (typeof d.status === 'number' && d.status >= 400))
+          a.networkFailures++;
+        break;
+      case 'interaction':
+        if (d.type === 'evaluate') a.evaluations++;
+        else if (d.type === 'wait') a.waits++;
+        else if (d.type === 'verify') a.verifies++;
+        break;
+    }
+  }
+  return a;
 }
 
 const WINDOW_MS = 1500;
@@ -162,5 +222,26 @@ export function analyzeTrajectory(events: BusEvent[]): TrajectoryReport {
   const firstFailure =
     failures.length > 0 ? failures.reduce((a, b) => (a.timestamp <= b.timestamp ? a : b)) : null;
 
-  return { totalActions, failureCount: failures.length, firstFailure, failures };
+  const activity = summarize(events);
+
+  // A useful one-liner even when nothing failed (a passive debugging session).
+  let summary: string;
+  if (firstFailure) {
+    summary = `${failures.length} failure(s); earliest: ${firstFailure.category} — ${firstFailure.summary}`;
+  } else {
+    const parts = [
+      activity.navigations && `${activity.navigations} navigation(s)`,
+      activity.actions && `${activity.actions} action(s)`,
+      activity.evaluations && `${activity.evaluations} evaluation(s)`,
+      activity.waits && `${activity.waits} wait(s)`,
+      activity.networkRequests &&
+        `${activity.networkRequests} request(s)${activity.networkFailures ? ` (${activity.networkFailures} failed)` : ''}`,
+      activity.consoleErrors && `${activity.consoleErrors} console error(s)`,
+    ].filter(Boolean);
+    summary = parts.length
+      ? `No failures detected. Activity: ${parts.join(', ')}.`
+      : 'No activity recorded on the timeline yet.';
+  }
+
+  return { totalActions, activity, failureCount: failures.length, firstFailure, failures, summary };
 }

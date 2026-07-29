@@ -132,4 +132,23 @@ describe('analyzeTrajectory', () => {
     ]);
     expect(r.firstFailure?.category).toBe('auth-failure');
   });
+
+  it('summarizes a PASSIVE session (navigations/evaluations/waits) with no failures', () => {
+    seq = 0;
+    const r = analyzeTrajectory([
+      ev('navigation', { url: 'https://app/' }, 1000),
+      ev('interaction', { type: 'evaluate', expression: 'document.title' }, 1100, 'tool-output'),
+      ev('interaction', { type: 'evaluate', expression: 'window.x' }, 1200, 'tool-output'),
+      ev('interaction', { type: 'wait', met: true }, 1300, 'tool-output'),
+      ev('network', { url: '/api', status: 200 }, 1400),
+    ]);
+    expect(r.failureCount).toBe(0);
+    expect(r.totalActions).toBe(0); // no clicks/types — but the session was not empty
+    expect(r.activity.navigations).toBe(1);
+    expect(r.activity.evaluations).toBe(2);
+    expect(r.activity.waits).toBe(1);
+    expect(r.activity.networkRequests).toBe(1);
+    expect(r.summary).toContain('No failures');
+    expect(r.summary).toContain('2 evaluation(s)');
+  });
 });

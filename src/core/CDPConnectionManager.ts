@@ -284,7 +284,10 @@ export class CDPConnectionManager {
 
   async navigate(
     url: string,
-    options: { waitUntil?: 'load' | 'networkidle0' | 'networkidle2' | 'domcontentloaded' } = {},
+    options: {
+      waitUntil?: 'load' | 'networkidle0' | 'networkidle2' | 'domcontentloaded';
+      bypassCache?: boolean;
+    } = {},
   ): Promise<string> {
     if (!this.page) {
       throw new Error('No active page. Launch browser first.');
@@ -374,6 +377,15 @@ export class CDPConnectionManager {
           throw err;
         }
       }
+    }
+
+    // Cache-bypass for local dev iteration: disable the HTTP cache so this (and
+    // subsequent) navigations refetch scripts/styles cold instead of re-serving
+    // a stale build. Persists for the session — the common dev-loop want.
+    if (options.bypassCache && this.cdpSession) {
+      await this.cdpSession
+        .send('Network.setCacheDisabled', { cacheDisabled: true })
+        .catch(() => {});
     }
 
     try {
