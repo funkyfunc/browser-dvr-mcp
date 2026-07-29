@@ -1,6 +1,6 @@
 {
   "name": "browser-dvr-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "mcpName": "io.github.funkyfunc/browser-dvr-mcp",
   "description": "A DVR and time-travel debugger for AI browser agents (MCP). Records every session — screen, DOM, network, console, storage — with provenance, so an agent can rewind to the moment it broke and see exactly what happened.",
   "type": "module",

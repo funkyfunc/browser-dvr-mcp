@@ -40,7 +40,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
       # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node ships older.
-      - run: npm install -g npm@latest
+      # Pin to npm 11.x: it has OIDC and still runs on node 20 (npm@latest is now
+      # npm@12, which requires node >=22.22.2 → EBADENGINE on this runner).
+      - run: npm install -g npm@11
       - run: npm ci
       - name: Verify the tag matches package.json version
         run: |
