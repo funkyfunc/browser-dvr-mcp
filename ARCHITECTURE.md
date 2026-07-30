@@ -58,9 +58,9 @@ Our telemetry gathering happens silently via passive CDP event listeners. We nev
 │                               │                                       │
 │  • atomic_interact            │  • get_semantic_surface               │
 │  • evaluate_in_context        │  • get_session_summary                │
-│  • validate_spatial_coordinate│  • query_session_telemetry            │
-│  • coordinate_click           │  • get_state_delta                    │
-│  • stream_screencast          │  • start/stop_human_recording         │
+│  • browser_navigate           │  • query_session_telemetry            │
+│  • browser_wait_for           │  • get_state_delta                    │
+│  • stream_screencast          │  • browser_get_timeline               │
 │  • browser_screenshot         │                                       │
 ├───────────────────────────────┴───────────────────────────────────────┤
 │                    Core Infrastructure                                │
@@ -204,11 +204,11 @@ The schema is the agent's only documentation. It must be complete.
 ### Human Handoff Pattern
 
 ```
-1. start_human_recording(url)      ← Open visible browser
-2. [Human interacts with the page]
-3. stop_human_recording()          ← Get synchronized timeline
-4. get_session_summary()           ← Understand what happened
-5. [Agent replicates the human's workflow programmatically]
+1. browser_begin_handoff(note)     ← Hand control to a human (visible window)
+2. [Human reproduces the issue in the same window]
+3. browser_end_handoff()           ← Return control; their actions are recorded
+4. browser_timetravel(...)         ← Scrub exactly what the human did
+5. [Agent replicates or learns from the human's workflow]
 ```
 
 ---

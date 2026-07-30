@@ -70,7 +70,7 @@ Every `browser_timetravel` returns an **anchor** — an opaque handle to that mo
 
 **Perceive** — `get_semantic_surface` (fused accessibility tree + geometry, one non-mutating capture), `get_element_tree`, `get_state_delta`, `browser_screenshot`, `stream_screencast`.
 
-**Drive** — `atomic_interact` (locate + act in one uninterruptible tick; click/type/hover/scroll/drag by stable `backendNodeId` or coordinate), `coordinate_click`, `browser_navigate`, `browser_wait_for`, `browser_new_tab` / `switch_tab` / `list_tabs` / `close_tab`.
+**Drive** — `atomic_interact` (locate + act in one uninterruptible tick; click/type/hover/scroll/drag by stable `backendNodeId` or coordinate), `browser_navigate` (with `bypassCache` for local dev), `browser_wait_for`, `browser_new_tab` / `switch_tab` / `list_tabs` / `close_tab`.
 
 **Record & time-travel (the DVR)** — `browser_save_session`, `browser_list_sessions`, `browser_load_session`, **`browser_timetravel`** (reconstruct everything as of any moment; anchor by time, event, or `beforeLastError`), `browser_get_timeline` (the provenance-tagged event stream).
 

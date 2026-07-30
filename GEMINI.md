@@ -9,7 +9,7 @@ To ensure high reliability of autonomous browser automation and avoid regression
 All tools that return visual coordinates, bounding boxes, or click targets must return them normalized to the **main viewport pixel space**. 
 
 * **The Rule:** No tool should ever return raw layout-relative or iframe-local coordinates. All calculations must resolve the target frame offsets using the helper `getFrameOffset(frame)` and add them to the coordinates before outputting values to the agent.
-* **Impact:** This ensures that coordinate finder outputs (e.g. `browser_find_text_coordinates`) are immediately compatible with interaction tools (e.g. `coordinate_click` and `atomic_interact`), preventing coordinate shift deadlocks.
+* **Impact:** This ensures that geometry surfaced by perception (e.g. `get_semantic_surface`) is immediately compatible with interaction tools (e.g. `atomic_interact`), preventing coordinate shift deadlocks.
 
 ---
 
@@ -17,7 +17,7 @@ All tools that return visual coordinates, bounding boxes, or click targets must 
 
 Enterprise web applications and design canvases utilize nested, scaled, same-origin, and cross-origin iframes. All perception and inspection tools must pierce these boundaries.
 
-* **The Rule:** Any tool querying element properties, structures, styles, or listeners (e.g., `browser_get_computed_style`, `browser_get_listeners`, `browser_get_outer_html`, `get_element_tree`) must support frame context switching.
+* **The Rule:** Any tool querying element properties, structures, styles, or listeners (e.g., `evaluate_in_context`, `browser_get_listeners`, `get_element_tree`) must support frame context switching.
 * **Protocol Targeting:** Use `findFrameForBackendNodeId` to locate the target subframe CDP session, and pass the target `frameId` explicitly to CDP calls (such as `Accessibility.getFullAXTree`) to avoid falling back to the main document context.
 
 ---

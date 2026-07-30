@@ -11,7 +11,7 @@ Best Browser MCP solves this through a philosophy of **Progressive Disclosure** 
 
 ## 1. The Browser as a Black Box
 Instead of forcing the agent to constantly poll and read everything, Best Browser runs as a black box. 
-Whether the browser is being driven by the agent, or a human developer has grabbed the mouse to record a manual debug session (`start_human_recording`), the server silently records everything:
+Whether the browser is being driven by the agent, or a human developer has grabbed the mouse to reproduce a bug in the same window (`browser_begin_handoff`), the server silently records everything:
 - Network traffic and failures
 - Console logs and exceptions
 - DOM mutations
