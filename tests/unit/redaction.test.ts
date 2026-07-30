@@ -28,10 +28,19 @@ describe('redactUrl', () => {
     expect(redactUrl(url)).toBe(url);
   });
 
-  it('leaves file:// and data: URLs alone', () => {
+  it('leaves file:// and short data: URLs alone', () => {
     expect(redactUrl('file:///tmp/testbed.html')).toBe('file:///tmp/testbed.html');
     const data = 'data:text/html;base64,PGh0bWw+';
     expect(redactUrl(data)).toBe(data);
+  });
+
+  it('truncates large data: URI blobs but keeps the media-type header', () => {
+    const blob = 'A'.repeat(50_000);
+    const out = redactUrl(`data:image/png;base64,${blob}`);
+    expect(out.startsWith('data:image/png;base64,')).toBe(true);
+    expect(out.length).toBeLessThan(200);
+    expect(out).toContain('chars omitted');
+    expect(out).not.toContain('A'.repeat(200));
   });
 
   it('scrubs sensitive params in non-parseable strings via regex fallback', () => {

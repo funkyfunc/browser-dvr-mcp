@@ -55,7 +55,27 @@ function keyIsSensitive(key: string): boolean {
  * strings. Non-sensitive URLs (e.g. file://, data:, plain http) pass through
  * unchanged.
  */
+/**
+ * data: URIs (inline base64 images/fonts) can be hundreds of KB of blob that
+ * flood the timeline and eat tokens. Keep the informative header (media type +
+ * encoding) and drop the payload with a length marker.
+ */
+const DATA_URI_KEEP = 48;
+function truncateDataUri(url: string): string {
+  const comma = url.indexOf(',');
+  if (comma === -1) {
+    return url.length > 128 ? `${url.slice(0, 128)}…[${url.length} chars]` : url;
+  }
+  const header = url.slice(0, comma + 1); // e.g. "data:image/png;base64,"
+  const payload = url.slice(comma + 1);
+  if (payload.length <= DATA_URI_KEEP) return url;
+  return `${header}${payload.slice(0, DATA_URI_KEEP)}…[${payload.length} chars omitted]`;
+}
+
 export function redactUrl(url: string): string {
+  if (typeof url === 'string' && url.startsWith('data:')) {
+    return truncateDataUri(url);
+  }
   try {
     const u = new URL(url);
     let changed = false;
